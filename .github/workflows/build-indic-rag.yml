@@ -31,11 +31,17 @@ jobs:
           curl -L --fail --retry 5 -o work/raw/indic-primary-sources/four_vedas.txt "$base/corpus/vedas_upanishads/four_vedas_complete/extracted_text.txt"
           curl -L --fail --retry 5 -o work/raw/biology/uberon.obo https://raw.githubusercontent.com/obophenotype/uberon/master/uberon.obo
           curl -L --fail --retry 5 -o work/raw/biology/cell_ontology.obo https://raw.githubusercontent.com/obophenotype/cell-ontology/master/cl.obo
+          curl -L --fail --retry 5 -o work/raw/sanskrit-data.zip https://github.com/sanskrit/data/archive/refs/heads/main.zip
+          curl -L --fail --retry 5 -o work/raw/siddhanta-kosha.json https://raw.githubusercontent.com/sciencewithsaucee-sudo/Siddhanta-Kosha/main/Siddhanta-Kosha.json
+          curl -L --fail --retry 5 -o work/raw/biology/ccf-slim.owl https://raw.githubusercontent.com/hubmapconsortium/ccf-ontology/main/ccf-slim.owl
+          curl -L --fail --retry 5 -o work/raw/biology/hra_uberon_3d_images.owl https://raw.githubusercontent.com/hubmapconsortium/ccf-validation-tools/master/owl/hra_uberon_3d_images.owl
+          curl -L --fail --retry 5 -o work/raw/biology/ccf.owl https://raw.githubusercontent.com/hubmapconsortium/ccf-ontology/main/ccf.owl
           ls -lh work/raw
       - name: Extract and build normalized manifests
         run: |
           set -euo pipefail
           mkdir -p work/extracted
+          unzip -q work/raw/sanskrit-data.zip -d work/extracted
           for z in work/raw/*.zip; do unzip -q "$z" -d work/extracted; done
           python - <<'PY'
           import csv, json, pathlib, re, hashlib, datetime
