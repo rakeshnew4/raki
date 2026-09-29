@@ -1,0 +1,56 @@
+name: build-indic-bio-rag
+on:
+  push:
+    branches: [ master ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download source texts
+        run: |
+          set -e
+          mkdir -p build/raw/indic_primary_sources build/raw/biology
+          base=https://raw.githubusercontent.com/AnotherAdhikari/indic-primary-sources/master/
+          curl -L --fail "$base/corpus/medical/charaka_samhita_kaviratna_1890/extracted_text.txt" -o build/raw/indic_primary_sources/charaka_samhita.txt
+          curl -L --fail "$base/corpus/yoga/yoga_sutras_rama_prasada_1912/extracted_text.txt" -o build/raw/indic_primary_sources/yoga_sutras.txt
+          curl -L --fail "$base/corpus/yoga/hatha_yoga_pradipika_pancham_sinh_1915/extracted_text.txt" -o build/raw/indic_primary_sources/hatha_yoga_pradipika.txt
+          curl -L --fail "$base/corpus/yoga/gheranda_samhita_sanskrit_gretil/extracted_text.txt" -o build/raw/indic_primary_sources/gheranda_samhita.txt
+          curl -L --fail "$base/corpus/yoga/siva_samhita_vasu_1914/extracted_text.txt" -o build/raw/indic_primary_sources/siva_samhita.txt
+          curl -L --fail "$base/corpus/tantric/serpent_power_woodroffe_1919/extracted_text.txt" -o build/raw/indic_primary_sources/serpent_power.txt
+          curl -L --fail "$base/corpus/philosophy/abhinavagupta_tantraloka_gretil/extracted_text.txt" -o build/raw/indic_primary_sources/tantraloka.txt
+          curl -L --fail "$base/corpus/puranas/agni_purana_sanskrit_gretil/extracted_text.txt" -o build/raw/indic_primary_sources/agni_purana.txt
+          curl -L --fail "$base/corpus/vedas_upanishads/four_vedas_complete/extracted_text.txt" -o build/raw/indic_primary_sources/four_vedas.txt
+          curl -L --fail https://raw.githubusercontent.com/obophenotype/uberon/master/uberon.obo -o build/raw/biology/uberon.obo
+      - name: Build RAG package
+        run: |
+          python - <<'PY'
+          import json,hashlib, pathlib,re
+          root=pathlib.Path("build"); raw=root/"raw"; chunks=root/"chunks"; chunks.mkdir(parents=True)
+          records=[]; n=0
+          for p in sorted(raw.rglob("*")):
+            if not p.is_file(): continue
+            text=p.read_text(errors="replace")
+            source=p.relative_to(raw).as_posix()
+            meta={"source_id":source.replace("/","_"),"source_path":source,"document":p.stem,"language":"Sanskrit/Indic" if "indic_primary_sources" in source else "ontology","source_type":"primary_text" if "indic_primary_sources" in source else "anatomy_ontology","sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
+            if p.suffix==".obo":
+              units=re.split(r"(?=^\\[Term\\]\\s*$)",text,flags=re.M)
+            else:
+              units=re.split(r"\\n\\s*\\n",text)
+            for i,u in enumerate(units):
+              u=u.strip()
+              if not u: continue
+              for j in range(0,len(u),5000):
+                c=u[j:j+5000].strip()
+                if c:
+                  n+=1; records.append({"chunk_id":f"inc:{n:07d}","text":c,**meta,"chunk_index":i,"offset":j})
+          (chunks/"chunks.jsonl").write_text("\n".join(json.dumps(x,ensure_ascii=False) for x in records))
+          (root/"SOURCE_MANIFEST.json").write_text(json.dumps({"version":"incremental-v1","count_chunks":n,"sources":[x for x in sorted({r["source_path"] for r in records})]},indent=2,ensure_ascii=False))
+          PY
+          cp -r build/raw build/chunks build/SOURCE_MANIFEST.json build/README.txt 2>/dev/null || true
+          cd build && zip -qr ../indic_bio_traditional_incremental_v1.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: indic-bio-traditional-incremental-v1
+          path: indic_bio_traditional_incremental_v1.zip
+          retention-days: 7
