@@ -17,6 +17,20 @@ jobs:
           curl -L --fail --retry 5 -o work/raw/gretil.zip https://github.com/tokushige-koyasan/gretil-corpus/archive/refs/heads/main.zip
           curl -L --fail --retry 5 -o work/raw/muktabodha.zip https://github.com/tokushige-koyasan/muktabodha-corpus/archive/refs/heads/main.zip
           curl -L --fail --retry 5 -o work/raw/dcs.zip https://github.com/tokushige-koyasan/dcs-corpus/archive/refs/heads/main.zip
+
+          mkdir -p work/raw/indic-primary-sources work/raw/biology
+          base=https://raw.githubusercontent.com/AnotherAdhikari/indic-primary-sources/master/
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/charaka_samhita.txt "$base/corpus/medical/charaka_samhita_kaviratna_1890/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/yoga_sutras.txt "$base/corpus/yoga/yoga_sutras_rama_prasada_1912/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/hatha_yoga_pradipika.txt "$base/corpus/yoga/hatha_yoga_pradipika_pancham_sinh_1915/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/gheranda_samhita.txt "$base/corpus/yoga/gheranda_samhita_sanskrit_gretil/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/siva_samhita.txt "$base/corpus/yoga/siva_samhita_vasu_1914/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/serpent_power.txt "$base/corpus/tantric/serpent_power_woodroffe_1919/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/tantraloka.txt "$base/corpus/philosophy/abhinavagupta_tantraloka_gretil/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/agni_purana.txt "$base/corpus/puranas/agni_purana_sanskrit_gretil/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/indic-primary-sources/four_vedas.txt "$base/corpus/vedas_upanishads/four_vedas_complete/extracted_text.txt"
+          curl -L --fail --retry 5 -o work/raw/biology/uberon.obo https://raw.githubusercontent.com/obophenotype/uberon/master/uberon.obo
+          curl -L --fail --retry 5 -o work/raw/biology/cell_ontology.obo https://raw.githubusercontent.com/obophenotype/cell-ontology/master/cl.obo
           ls -lh work/raw
       - name: Extract and build normalized manifests
         run: |
