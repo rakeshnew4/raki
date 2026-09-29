@@ -1,0 +1,74 @@
+name: Build Indic RAG Source Packages
+on:
+  push:
+    paths:
+      - ".github/workflows/build-indic-rag.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/build-indic-rag.yml"
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download source repositories
+        run: |
+          set -euo pipefail
+          mkdir -p work/raw work/out
+          curl -L --fail --retry 5 -o work/raw/gretil.zip https://github.com/tokushige-koyasan/gretil-corpus/archive/refs/heads/main.zip
+          curl -L --fail --retry 5 -o work/raw/muktabodha.zip https://github.com/tokushige-koyasan/muktabodha-corpus/archive/refs/heads/main.zip
+          curl -L --fail --retry 5 -o work/raw/dcs.zip https://github.com/tokushige-koyasan/dcs-corpus/archive/refs/heads/main.zip
+          ls -lh work/raw
+      - name: Extract and build normalized manifests
+        run: |
+          set -euo pipefail
+          mkdir -p work/extracted
+          for z in work/raw/*.zip; do unzip -q "$z" -d work/extracted; done
+          python - <<'PY'
+          import json, pathlib, hashlib, datetime
+          root=pathlib.Path("work/extracted")
+          out=pathlib.Path("work/out/normalized")
+          out.mkdir(parents=True, exist_ok=True)
+          repos=sorted([p for p in root.iterdir() if p.is_dir()])
+          for repo in repos:
+              files=[]
+              for p in repo.rglob("*"):
+                  if not p.is_file(): continue
+                  try:
+                      b=p.read_bytes()
+                      rel=p.relative_to(repo).as_posix()
+                      files.append({"path":rel,"bytes":len(b),"sha256":hashlib.sha256(b).hexdigest()})
+                  except Exception: pass
+              (out/(repo.name+"_manifest.json")).write_text(json.dumps({
+                  "repository":repo.name,"generated_utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  "file_count":len(files),"files":files
+              },ensure_ascii=False,indent=2))
+          (out/"SOURCE_MANIFEST.json").write_text(json.dumps({
+              "purpose":"Indic knowledge RAG source acquisition package",
+              "sources":[
+                {"name":"GRETIL extracted corpus","repo":"tokushige-koyasan/gretil-corpus","url":"https://github.com/tokushige-koyasan/gretil-corpus","license":"CC BY-NC-SA 4.0 except documented Mitakshara exception"},
+                {"name":"Muktabodha corpus","repo":"tokushige-koyasan/muktabodha-corpus","url":"https://github.com/tokushige-koyasan/muktabodha-corpus","license":"CC BY-NC 4.0"},
+                {"name":"Digital Corpus of Sanskrit","repo":"tokushige-koyasan/dcs-corpus","url":"https://github.com/tokushige-koyasan/dcs-corpus","license":"CC BY 4.0"}
+              ]
+          },ensure_ascii=False,indent=2))
+          PY
+      - name: Package
+        run: |
+          set -euo pipefail
+          cd work
+          zip -qr ../indic_source_raw_repositories.zip raw
+          zip -qr ../indic_source_normalized_manifests.zip out/normalized
+      - name: Upload raw corpus ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: indic-source-raw-repositories
+          path: indic_source_raw_repositories.zip
+          retention-days: 7
+      - name: Upload normalized manifest ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: indic-source-normalized-manifests
+          path: indic_source_normalized_manifests.zip
+          retention-days: 7
