@@ -113,11 +113,14 @@ jobs:
           name: sanskrit-linguistic-data
           path: work/source_packages/sanskrit-data.zip
           retention-days: 7
-      - name: Upload HRA CCF
+      - name: Split HRA CCF archive
+        run: |
+          split -b 400M -d -a 2 work/source_packages/ccf-hra-releases.zip work/source_packages/ccf-hra-releases.part-
+      - name: Upload HRA CCF parts
         uses: actions/upload-artifact@v4
         with:
-          name: human-reference-atlas-ccf
-          path: work/source_packages/ccf-hra-releases.zip
+          name: human-reference-atlas-ccf-parts
+          path: work/source_packages/ccf-hra-releases.part-*
           retention-days: 7
       - name: Upload biology ontologies
         uses: actions/upload-artifact@v4
