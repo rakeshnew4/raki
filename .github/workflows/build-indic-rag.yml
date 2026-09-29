@@ -116,11 +116,35 @@ jobs:
       - name: Split HRA CCF archive
         run: |
           split -b 400M -d -a 2 work/source_packages/ccf-hra-releases.zip work/source_packages/ccf-hra-releases.part-
-      - name: Upload HRA CCF parts
+      - name: Upload HRA CCF part 00
         uses: actions/upload-artifact@v4
         with:
-          name: human-reference-atlas-ccf-parts
-          path: work/source_packages/ccf-hra-releases.part-*
+          name: human-reference-atlas-ccf-part-00
+          path: work/source_packages/ccf-hra-releases.part-00
+          retention-days: 7
+      - name: Upload HRA CCF part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-reference-atlas-ccf-part-01
+          path: work/source_packages/ccf-hra-releases.part-01
+          retention-days: 7
+      - name: Upload HRA CCF part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-reference-atlas-ccf-part-02
+          path: work/source_packages/ccf-hra-releases.part-02
+          retention-days: 7
+      - name: Upload HRA CCF part 03
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-reference-atlas-ccf-part-03
+          path: work/source_packages/ccf-hra-releases.part-03
+          retention-days: 7
+      - name: Upload HRA CCF part 04
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-reference-atlas-ccf-part-04
+          path: work/source_packages/ccf-hra-releases.part-04
           retention-days: 7
       - name: Upload biology ontologies
         uses: actions/upload-artifact@v4
