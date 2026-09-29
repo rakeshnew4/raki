@@ -33,7 +33,7 @@ jobs:
           curl -L --fail --retry 5 -o work/raw/biology/cell_ontology.obo https://raw.githubusercontent.com/obophenotype/cell-ontology/master/cl.obo
           curl -L --fail --retry 5 -o work/raw/sanskrit-data.zip https://github.com/sanskrit/data/archive/refs/heads/main.zip
           curl -L --fail --retry 5 -o work/raw/siddhanta-kosha.json https://raw.githubusercontent.com/sciencewithsaucee-sudo/Siddhanta-Kosha/main/Siddhanta-Kosha.json
-          curl -L --fail --retry 5 -o work/raw/biology/ccf-slim.owl http://purl.org/ccf/latest/ccf.owl
+          curl -L --fail --retry 5 -o work/raw/biology/ccf-releases.zip https://github.com/hubmapconsortium/ccf-releases/archive/refs/heads/main.zip
 
           ls -lh work/raw
       - name: Extract and build normalized manifests
