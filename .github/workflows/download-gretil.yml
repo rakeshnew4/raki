@@ -1,0 +1,26 @@
+name: Download Indic Source Corpus
+on:
+  push:
+    branches: [rag-source-download]
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download GRETIL
+        run: |
+          set -e
+          curl -L --fail --retry 5 -o gretil.zip https://github.com/tokushige-koyasan/gretil-corpus/archive/refs/heads/main.zip
+          ls -lh gretil.zip
+      - name: Package
+        run: |
+          mkdir -p out
+          mv gretil.zip out/gretil-corpus.zip
+          printf '%s\n' 'source=GRETIL extracted GitHub corpus' 'url=https://github.com/tokushige-koyasan/gretil-corpus' > out/SOURCE.txt
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gretil-corpus
+          path: out
+          retention-days: 7
