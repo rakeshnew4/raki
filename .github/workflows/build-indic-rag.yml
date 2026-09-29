@@ -77,11 +77,61 @@ jobs:
           cd work
           zip -qr ../indic_source_raw_repositories.zip raw
           zip -qr ../indic_source_normalized_manifests.zip out/normalized
-      - name: Upload raw corpus ZIP
+      - name: Prepare source-specific packages
+        run: |
+          set -euo pipefail
+          mkdir -p work/source_packages
+          cp work/raw/gretil.zip work/source_packages/gretil.zip
+          cp work/raw/muktabodha.zip work/source_packages/muktabodha.zip
+          cp work/raw/dcs.zip work/source_packages/dcs.zip
+          cp work/raw/sanskrit-data.zip work/source_packages/sanskrit-data.zip
+          cp work/raw/biology/ccf-releases.zip work/source_packages/ccf-hra-releases.zip
+          tar -czf work/source_packages/biology-ontologies.tar.gz -C work/raw biology/uberon.obo biology/cell_ontology.obo
+          cp work/raw/indic-primary-sources/*.txt work/source_packages/
+          cp work/raw/siddhanta-kosha.json work/source_packages/
+      - name: Upload GRETIL
         uses: actions/upload-artifact@v4
         with:
-          name: indic-source-raw-repositories
-          path: indic_source_raw_repositories.zip
+          name: indic-gretil-corpus
+          path: work/source_packages/gretil.zip
+          retention-days: 7
+      - name: Upload Muktabodha
+        uses: actions/upload-artifact@v4
+        with:
+          name: indic-muktabodha-corpus
+          path: work/source_packages/muktabodha.zip
+          retention-days: 7
+      - name: Upload DCS
+        uses: actions/upload-artifact@v4
+        with:
+          name: indic-dcs-corpus
+          path: work/source_packages/dcs.zip
+          retention-days: 7
+      - name: Upload Sanskrit linguistic data
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanskrit-linguistic-data
+          path: work/source_packages/sanskrit-data.zip
+          retention-days: 7
+      - name: Upload HRA CCF
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-reference-atlas-ccf
+          path: work/source_packages/ccf-hra-releases.zip
+          retention-days: 7
+      - name: Upload biology ontologies
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-biology-ontologies
+          path: work/source_packages/biology-ontologies.tar.gz
+          retention-days: 7
+      - name: Upload selected traditional texts
+        uses: actions/upload-artifact@v4
+        with:
+          name: selected-indic-primary-texts
+          path: |
+            work/source_packages/*.txt
+            work/source_packages/siddhanta-kosha.json
           retention-days: 7
       - name: Upload normalized manifest ZIP
         uses: actions/upload-artifact@v4
