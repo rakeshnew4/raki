@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           mkdir -p work/extracted
           unzip -qo work/raw/sanskrit-data.zip -d work/extracted
-          for z in work/raw/*.zip; do unzip -q "$z" -d work/extracted; done
+          for z in work/raw/*.zip; do unzip -qo "$z" -d work/extracted; done
           python - <<'PY'
           import csv, json, pathlib, re, hashlib, datetime
           root=pathlib.Path("work/extracted")
