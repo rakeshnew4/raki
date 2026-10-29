@@ -313,6 +313,164 @@ class DeviceAndDeleteTests(unittest.TestCase):
         shutil.rmtree(victim)
 
 
+class HoursCombineCleanupTests(unittest.TestCase):
+    """Hour-wise view, one combined WAV per period, and clean-up with filters."""
+
+    @classmethod
+    def setUpClass(cls):
+        webui.save_users({"alice": webui.hash_password("correct horse battery")})
+        cls.app = FastAPI()
+        cls.app.include_router(webui.router)
+
+    def setUp(self):
+        shutil.rmtree(REC, ignore_errors=True)
+        webui._failures.clear()
+        webui.ACTIVE_SESSIONS.clear()
+        self.client = TestClient(self.app, base_url="https://testserver")
+        self.assertEqual(self.client.post("/samsungpro/api/login", json={"username": "alice", "password": "correct horse battery"}).status_code, 200)
+        # two devices: A has 2 chunks at 10:00 and 1 at 10:30 and 11:05; B has 1 at 10:10 (each chunk 8 s of silence)
+        self.make("20260301-100000-aaaaaa", "A", "Phone A", ["a1", "a2"])
+        self.make("20260301-103000-bbbbbb", "A", "Phone A", ["a3"])
+        self.make("20260301-110500-cccccc", "A", "Phone A", ["a4"])
+        self.make("20260301-101000-dddddd", "B", "Phone B", ["b1"])
+
+    def make(self, sid, dev, name, texts):
+        d = make_session(sid, {i: ("w", f"[chunk {i:04d} 8.0s] {t}") for i, t in enumerate(texts, 1)})
+        webui.write_session_meta(d, dev, name)
+        old = time.time() - 900
+        for p in d.iterdir():
+            os.utime(p, (old, old))
+        return d
+
+    def at(self, hhmm, day="20260301"):
+        return time.mktime(time.strptime(f"{day} {hhmm}", "%Y%m%d %H%M"))
+
+    def get(self, path, **params):
+        return self.client.get("/samsungpro/api/" + path, params=params)
+
+    def test_hours_bucket_in_the_callers_time_zone(self):
+        local = (time.mktime(time.gmtime(0)) * -1) // 60  # this machine's offset east of UTC, in minutes
+        rows = self.get("hours", tz=int(local))
+        self.assertEqual(rows.status_code, 200)
+        hours = rows.json()["hours"]
+        self.assertEqual([(h["start"], h["chunks"], h["audio_chunks"]) for h in hours],
+                         [(self.at("1100"), 1, 1), (self.at("1000"), 4, 4)])  # newest first; 10:00 holds a1 a2 b1 a3
+        self.assertEqual(hours[1]["devices"], ["Phone A", "Phone B"])
+        self.assertTrue(hours[0]["has_audio"])
+        only_b = self.get("hours", device="B", tz=int(local)).json()["hours"]
+        self.assertEqual([(h["start"], h["chunks"]) for h in only_b], [(self.at("1000"), 1)])
+        # half-hour time zone (India): the same chunks fall into other buckets
+        shifted = self.get("hours", tz=int(local) + 330).json()["hours"]
+        self.assertEqual({h["start"] % 3600 for h in shifted}, {(self.at("1000") - 330 * 60) % 3600})
+
+    def test_range_timeline_and_audio_offsets(self):
+        r = self.get("range", start=self.at("1000"), end=self.at("1100")).json()
+        self.assertEqual([c["text"] for c in r["chunks"]], ["a1", "a2", "b1", "a3"])  # by time: 10:00:00 10:00:08 10:10 10:30
+        self.assertEqual([c["audio_offset"] for c in r["chunks"]], [0, 8, 16, 24])
+        self.assertEqual(r["audio_seconds"], 32.0)
+        self.assertEqual(self.get("range", start=5, end=5).status_code, 400)
+        self.assertEqual(self.get("range", start=0, end=10 ** 7).status_code, 400)
+        self.assertEqual(self.get("range", start=0, end=10, device="../x").status_code, 400)
+
+    def test_combined_wav_is_one_valid_seekable_file(self):
+        start, end = self.at("1000"), self.at("1100")
+        r = self.get("range/audio.wav", start=start, end=end)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["accept-ranges"], "bytes")
+        body = r.content
+        pcm = 4 * 8 * 32000
+        self.assertEqual(len(body), 44 + pcm)
+        self.assertEqual(int(r.headers["content-length"]), len(body))
+        self.assertEqual(body[:4], b"RIFF")
+        self.assertEqual(struct.unpack("<I", body[40:44])[0], pcm)
+        self.assertEqual(struct.unpack("<I", body[4:8])[0], 36 + pcm)
+        import wave, io
+        with wave.open(io.BytesIO(body)) as w:
+            self.assertEqual((w.getnchannels(), w.getframerate(), w.getnframes()), (1, 16000, 4 * 8 * 16000))
+        part = self.client.get("/samsungpro/api/range/audio.wav", params={"start": start, "end": end}, headers={"Range": "bytes=100000-100999"})
+        self.assertEqual(part.status_code, 206)
+        self.assertEqual(part.content, body[100000:101000])
+        self.assertEqual(part.headers["content-range"], f"bytes 100000-100999/{len(body)}")
+        tail = self.client.get("/samsungpro/api/range/audio.wav", params={"start": start, "end": end}, headers={"Range": "bytes=-10"})
+        self.assertEqual(tail.content, body[-10:])
+        head = self.client.get("/samsungpro/api/range/audio.wav", params={"start": start, "end": end}, headers={"Range": "bytes=0-9"})
+        self.assertEqual(head.content, body[:10])
+        self.assertEqual(self.client.get("/samsungpro/api/range/audio.wav", params={"start": start, "end": end}, headers={"Range": f"bytes={len(body)}-"}).status_code, 416)
+        only_b = self.get("range/audio.wav", start=start, end=end, device="B")
+        self.assertEqual(len(only_b.content), 44 + 8 * 32000)
+        self.assertEqual(self.get("range/audio.wav", start=self.at("0900"), end=self.at("0950")).status_code, 404)
+        self.assertIn("attachment", self.get("range/audio.wav", start=start, end=end, download="true").headers["content-disposition"])
+
+    def test_combined_wav_survives_a_vanished_file(self):
+        start, end = self.at("1000"), self.at("1100")
+        orig = webui._stream_virtual_file
+        victim = REC / "20260301-101000-dddddd" / "chunk_0001.wav"
+        real_stat = Path.stat
+        r = None
+        # the file is listed (stat ok), then removed before it is read: it must read as silence, same length
+        def gone(*a, **k):
+            victim.unlink(missing_ok=True)
+            return orig(*a, **k)
+        webui._stream_virtual_file = gone
+        try:
+            r = self.get("range/audio.wav", start=start, end=end)
+        finally:
+            webui._stream_virtual_file = orig
+        self.assertEqual(len(r.content), 44 + 4 * 8 * 32000)
+
+    def test_new_endpoints_need_login(self):
+        c = TestClient(self.app, base_url="https://testserver")
+        self.assertEqual(c.get("/samsungpro/api/hours").status_code, 401)
+        self.assertEqual(c.get("/samsungpro/api/range", params={"start": 0, "end": 10}).status_code, 401)
+        self.assertEqual(c.get("/samsungpro/api/range/audio.wav", params={"start": 0, "end": 10}).status_code, 401)
+        self.assertEqual(c.post("/samsungpro/api/cleanup", json={}).status_code, 401)
+
+    def cleanup(self, **body):
+        return self.client.post("/samsungpro/api/cleanup", json=body)
+
+    def wavs(self):
+        return sorted(p.parent.name + "/" + p.name for p in REC.glob("*/chunk_*.wav"))
+
+    def test_cleanup_previews_by_default_and_deletes_nothing(self):
+        r = self.cleanup(what="audio").json()
+        self.assertEqual((r["dry_run"], r["recordings"], r["audio_files"]), (True, 4, 5))
+        self.assertGreater(r["bytes"], 5 * 256000)
+        self.assertEqual(len(self.wavs()), 5)
+
+    def test_cleanup_audio_by_period_and_device_keeps_text(self):
+        r = self.cleanup(what="audio", start=self.at("1000"), end=self.at("1100"), device="A", dry_run=False).json()
+        self.assertEqual(r["audio_files"], 3)  # a1 a2 a3; a4 is at 11:05, b1 is device B
+        self.assertEqual(self.wavs(), ["20260301-101000-dddddd/chunk_0001.wav", "20260301-110500-cccccc/chunk_0001.wav"])
+        detail = self.get("sessions/20260301-100000-aaaaaa").json()
+        self.assertEqual([c["text"] for c in detail["chunks"]], ["a1", "a2"])  # text and offsets stay
+        self.assertEqual([c["offset"] for c in detail["chunks"]], [0, 8])
+
+    def test_cleanup_audio_can_cut_inside_one_session(self):
+        r = self.cleanup(what="audio", start=self.at("1000") + 5, end=self.at("1000") + 60, dry_run=False).json()  # only a2 (starts at +8 s)
+        self.assertEqual(r["audio_files"], 1)
+        self.assertIn("20260301-100000-aaaaaa/chunk_0001.wav", self.wavs())
+        self.assertNotIn("20260301-100000-aaaaaa/chunk_0002.wav", self.wavs())
+
+    def test_cleanup_whole_recordings_by_start_time(self):
+        r = self.cleanup(what="all", end=self.at("1020"), dry_run=False).json()  # started before 10:20: aaaaaa and dddddd
+        self.assertEqual((r["recordings"], r["audio_files"]), (2, 3))
+        self.assertEqual(sorted(p.name for p in REC.iterdir()), ["20260301-103000-bbbbbb", "20260301-110500-cccccc"])
+
+    def test_cleanup_never_touches_live_recordings(self):
+        webui.ACTIVE_SESSIONS.add("20260301-100000-aaaaaa")
+        for what in ("audio", "all"):
+            r = self.cleanup(what=what, device="A", dry_run=False).json()
+            self.assertEqual(r["skipped_live"], 1)
+        self.assertTrue((REC / "20260301-100000-aaaaaa" / "chunk_0001.wav").exists())
+        self.assertTrue((REC / "20260301-100000-aaaaaa" / "transcript.txt").exists())
+
+    def test_cleanup_rejects_bad_input(self):
+        self.assertEqual(self.cleanup(device="../x").status_code, 400)
+        self.assertEqual(self.cleanup(start=10, end=5).status_code, 400)
+        self.assertEqual(self.cleanup(what="everything").status_code, 422)
+        self.assertEqual(len(self.wavs()), 5)
+
+
 class StreamServerSwitchTests(unittest.TestCase):
     """The stream server transcribes every chunk, and keeps the WAV only while the switch is on."""
 

@@ -11,11 +11,13 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).parent
@@ -442,3 +444,219 @@ def delete_device_sessions(device_id: str, request: Request):
             shutil.rmtree(d)
             deleted += 1
     return {"deleted": deleted, "skipped_live": skipped}
+
+
+# ── time ranges: hour by hour, combined audio ───────────────────────────────
+
+HOUR_SECONDS = 3600
+MAX_RANGE_SECONDS = 48 * HOUR_SECONDS  # one combined file / one clean-up window at most this long when both ends are given
+STREAM_PIECE_BYTES = 64 * 1024
+
+
+def _check_device(device: str) -> str:
+    if device and not DEVICE_ID_RE.match(device):
+        raise HTTPException(status_code=400, detail="Bad device")
+    return device
+
+
+def _range_chunks(start: float, end: float, device: str = "") -> list[dict]:
+    """Settled chunks whose start time (session start + offset) is in [start, end), oldest first, any session."""
+    found = []
+    for d in _all_session_dirs():
+        session_start = _started_at(d.name)
+        if session_start >= end:
+            continue
+        device_id, device_name = read_session_meta(d)
+        if device and device_id != device:
+            continue
+        for c in _chunks(d):
+            when = session_start + c["offset"]
+            if start <= when < end:
+                found.append({**c, "time": when, "session": d.name, "device_id": device_id, "device_name": device_name,
+                              "path": d / c["file"] if c["file"] else None})
+    found.sort(key=lambda c: (c["time"], c["session"], c["n"]))
+    return found
+
+
+@router.get("/api/hours")
+def list_hours(request: Request, device: str = "", tz: int = 0):
+    """Hour buckets (in the caller's time zone, tz = minutes east of UTC) that hold recordings, newest first."""
+    current_user(request)
+    _check_device(device)
+    tz = max(-14 * 60, min(14 * 60, tz))
+    buckets: dict[int, dict] = {}
+    for c in _range_chunks(0, float("inf"), device):
+        key = int((c["time"] + tz * 60) // HOUR_SECONDS)
+        b = buckets.setdefault(key, {"start": key * HOUR_SECONDS - tz * 60, "end": (key + 1) * HOUR_SECONDS - tz * 60,
+                                     "chunks": 0, "seconds": 0.0, "audio_chunks": 0, "devices": set()})
+        b["chunks"] += 1
+        b["seconds"] += c["seconds"]
+        b["audio_chunks"] += 1 if c["has_audio"] else 0
+        b["devices"].add(c["device_name"])
+    rows = [{**b, "seconds": round(b["seconds"], 1), "has_audio": b["audio_chunks"] > 0, "devices": sorted(b["devices"])}
+            for b in buckets.values()]
+    return {"hours": sorted(rows, key=lambda r: -r["start"])}
+
+
+def _valid_range(start: float, end: float) -> None:
+    if not end > start:
+        raise HTTPException(status_code=400, detail="End must be after start")
+    if end - start > MAX_RANGE_SECONDS:
+        raise HTTPException(status_code=400, detail="Range is too long (48 hours at most)")
+
+
+@router.get("/api/range")
+def get_range(request: Request, start: float, end: float, device: str = ""):
+    """The chunks of a time range as one timeline; audio_offset is where the chunk starts in the combined audio."""
+    current_user(request)
+    _check_device(device)
+    _valid_range(start, end)
+    rows, audio_at = [], 0.0
+    for c in _range_chunks(start, end, device):
+        row = {"time": c["time"], "session": c["session"], "n": c["n"], "device_name": c["device_name"],
+               "seconds": c["seconds"], "text": c["text"], "has_audio": c["has_audio"], "audio_offset": None}
+        if c["path"]:
+            row["audio_offset"] = round(audio_at, 2)
+            audio_at += _seconds(c["path"])
+        rows.append(row)
+    return {"start": start, "end": end, "chunks": rows, "audio_seconds": round(audio_at, 1)}
+
+
+def _wav_header(data_bytes: int) -> bytes:
+    return (b"RIFF" + struct.pack("<I", 36 + data_bytes) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, SAMPLE_RATE, BYTES_PER_SECOND, SAMPLE_WIDTH, 16)
+            + b"data" + struct.pack("<I", data_bytes))
+
+
+def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """A single 'bytes=a-b' range -> (first, last) inclusive; None when absent; ValueError when not satisfiable."""
+    if not header or not header.startswith("bytes=") or "," in header:
+        return None
+    first, _, last = header[6:].partition("-")
+    if first == "":
+        n = int(last)
+        if n <= 0:
+            raise ValueError
+        return max(0, size - n), size - 1
+    a = int(first)
+    b = min(int(last), size - 1) if last else size - 1
+    if a >= size or b < a:
+        raise ValueError
+    return a, b
+
+
+def _stream_virtual_file(header: bytes, parts: list[tuple[Path, int]], first: int, last: int):
+    """Bytes first..last (inclusive) of header + the PCM payload of each WAV in turn (a file that vanished reads as silence)."""
+    position = 0
+    pieces = [(None, len(header))] + [(p, n) for p, n in parts]
+    for path, length in pieces:
+        if position > last:
+            return
+        part_end = position + length
+        if part_end > first:
+            skip = max(0, first - position)
+            take = min(length, last + 1 - position) - skip
+            if path is None:
+                yield header[skip:skip + take]
+            else:
+                try:
+                    with open(path, "rb") as f:
+                        f.seek(WAV_HEADER_BYTES + skip)
+                        left = take
+                        while left > 0:
+                            data = f.read(min(STREAM_PIECE_BYTES, left))
+                            if not data:
+                                yield b"\x00" * left
+                                break
+                            left -= len(data)
+                            yield data
+                except FileNotFoundError:
+                    yield b"\x00" * take
+        position = part_end
+
+
+@router.get("/api/range/audio.wav")
+def get_range_audio(request: Request, start: float, end: float, device: str = "", download: bool = False):
+    """All the audio of a time range joined into one WAV (seekable). Chunks are joined in time order, with no gap filling."""
+    current_user(request)
+    _check_device(device)
+    _valid_range(start, end)
+    parts = []
+    for c in _range_chunks(start, end, device):
+        if c["path"]:
+            try:
+                parts.append((c["path"], max(0, c["path"].stat().st_size - WAV_HEADER_BYTES)))
+            except FileNotFoundError:
+                pass
+    if not parts:
+        raise HTTPException(status_code=404, detail="No audio in this period")
+    header = _wav_header(sum(n for _, n in parts))
+    size = len(header) + sum(n for _, n in parts)
+    try:
+        byte_range = _parse_range(request.headers.get("range"), size)
+    except ValueError:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+    first, last = byte_range or (0, size - 1)
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(last - first + 1), "Cache-Control": "no-store"}
+    if byte_range:
+        headers["Content-Range"] = f"bytes {first}-{last}/{size}"
+    if download:
+        stamp = time.strftime("%Y%m%d-%H%M", time.localtime(start))
+        headers["Content-Disposition"] = f'attachment; filename="raki-{stamp}-{int((end - start) // 60)}min.wav"'
+    return StreamingResponse(_stream_virtual_file(header, parts, first, last), status_code=206 if byte_range else 200,
+                             media_type="audio/wav", headers=headers)
+
+
+# ── clean-up with filters ───────────────────────────────────────────────────
+
+class CleanupBody(BaseModel):
+    device: str = ""
+    start: float | None = None  # epoch seconds, None = from the beginning
+    end: float | None = None  # epoch seconds, None = up to now (and later)
+    what: Literal["audio", "all"] = "audio"  # audio: the WAV chunks whose time is in the period, text stays; all: whole recordings that started in it
+    dry_run: bool = True  # preview first; nothing is deleted unless this is false
+
+
+@router.post("/api/cleanup")
+def cleanup(body: CleanupBody, request: Request):
+    """Delete audio (or whole recordings) by device and period. Live recordings are never touched."""
+    current_user(request)
+    _check_device(body.device)
+    start = body.start if body.start is not None else float("-inf")
+    end = body.end if body.end is not None else float("inf")
+    if not end > start:
+        raise HTTPException(status_code=400, detail="End must be after start")
+    recordings = audio_files = freed = skipped_live = 0
+    for d in _all_session_dirs():
+        if body.device and read_session_meta(d)[0] != body.device:
+            continue
+        session_start = _started_at(d.name)
+        if body.what == "all":
+            hit = start <= session_start < end
+        else:
+            hit = session_start < end  # chunks later in a long session can still fall inside the period
+        if not hit:
+            continue
+        if _is_live(d):
+            skipped_live += 1
+            continue
+        if body.what == "all":
+            files = [p for p in d.iterdir() if p.is_file()]
+            recordings += 1
+            audio_files += sum(1 for p in files if CHUNK_FILE_RE.match(p.name))
+            freed += sum(p.stat().st_size for p in files)
+            if not body.dry_run:
+                shutil.rmtree(d)
+            continue
+        removed_here = 0
+        for c in _chunks(d):
+            if c["has_audio"] and start <= session_start + c["offset"] < end:
+                path = d / c["file"]
+                removed_here += 1
+                freed += path.stat().st_size
+                if not body.dry_run:
+                    path.unlink(missing_ok=True)
+        if removed_here:
+            recordings += 1
+            audio_files += removed_here
+    return {"dry_run": body.dry_run, "recordings": recordings, "audio_files": audio_files,
+            "bytes": freed, "skipped_live": skipped_live}

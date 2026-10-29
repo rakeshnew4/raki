@@ -49,6 +49,22 @@
   .devicebar .devinfo { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: .85rem; }
   .devicebar .devinfo span { flex: 1; }
   .session .dev { color: var(--accent); font-size: .82rem; }
+  .modes { display: flex; gap: 0; margin: 10px 16px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .modes button { flex: 1; border: 0; background: transparent; padding: 9px 8px; min-height: 40px; font-weight: 600; }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+  .row.hr { grid-template-columns: 74px 1fr; }
+  .row .dev { color: var(--accent); font-size: .8rem; margin-right: 8px; }
+  dialog { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 14px; width: calc(100% - 32px); max-width: 460px; padding: 22px 20px; }
+  dialog::backdrop { background: rgba(0,0,0,.5); }
+  dialog h2 { margin: 0 0 4px; font-size: 1.2rem; }
+  dialog select, dialog input[type="datetime-local"] { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); min-height: 44px; font: inherit; color: inherit; }
+  dialog fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 14px 0 0; padding: 6px 12px 10px; }
+  dialog legend { font-size: .9rem; font-weight: 600; padding: 0 6px; }
+  dialog fieldset label { display: flex; align-items: flex-start; gap: 8px; font-weight: 400; margin: 6px 0 0; }
+  dialog fieldset input { width: auto; min-height: 0; margin-top: 4px; }
+  #cleanResult { min-height: 2.6em; margin: 14px 0 0; font-size: .92rem; }
+  #cleanResult.bad { color: var(--danger); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 10px; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--live); margin-right: 5px; }
 
   /* login */
@@ -63,8 +79,8 @@
 
   /* app */
   #app { height: 100%; display: flex; flex-direction: column; }
-  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
-  header h1 { margin: 0; font-size: 1.1rem; flex: 1; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 1.1rem; flex: 1 1 140px; }
   header .who { color: var(--muted); font-size: .9rem; }
   .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px 1fr; }
   aside { border-right: 1px solid var(--border); background: var(--surface); overflow-y: auto; }
@@ -121,6 +137,7 @@
       <span class="track" aria-hidden="true"></span>
       <span>Save audio</span>
     </label>
+    <button class="btn" id="cleanBtn" type="button">Clean up…</button>
     <span class="who" id="who"></span>
     <button class="btn" id="logoutBtn" type="button">Sign out</button>
   </header>
@@ -136,7 +153,11 @@
           <button class="btn danger" id="deleteDeviceBtn" type="button">Delete all</button>
         </div>
       </div>
-      <h2>Recordings</h2>
+      <div class="modes" role="group" aria-label="View">
+        <button type="button" id="modeSessions" aria-pressed="true">Recordings</button>
+        <button type="button" id="modeHours" aria-pressed="false">Hours</button>
+      </div>
+      <h2 id="listTitle">Recordings</h2>
       <div id="sessions"></div>
     </aside>
     <main>
@@ -147,6 +168,13 @@
         <button class="btn danger" id="deleteAudioBtn" type="button">Delete audio</button>
         <button class="btn danger" id="deleteBtn" type="button">Delete recording</button>
       </div>
+      <div class="toolbar" id="hourToolbar" hidden>
+        <div class="title"><strong id="hourTitle"></strong><span id="hourMeta"></span></div>
+        <button class="btn" id="hourReloadBtn" type="button">Reload</button>
+        <button class="btn" id="hourAudioBtn" type="button">Download audio</button>
+        <button class="btn" id="hourTextBtn" type="button">Download text</button>
+        <button class="btn danger" id="hourDeleteBtn" type="button">Delete this audio</button>
+      </div>
       <div class="player" id="player" hidden>
         <div class="now" id="now">Pick a line to play it</div>
         <audio id="audio" controls preload="none"></audio>
@@ -156,16 +184,52 @@
   </div>
 </div>
 
+<dialog id="cleanDlg" aria-labelledby="cleanTitle">
+  <h2 id="cleanTitle">Clean up recordings</h2>
+  <p class="sub" style="margin:0 0 6px;color:var(--muted);font-size:.9rem">Pick what to remove, preview it, then delete. Live recordings are never touched.</p>
+  <label for="cleanDevice">Device</label>
+  <select id="cleanDevice"></select>
+  <label for="cleanPeriod">Period</label>
+  <select id="cleanPeriod">
+    <option value="all">Any time</option>
+    <option value="o1">Older than 1 day</option>
+    <option value="o7">Older than 7 days</option>
+    <option value="o30">Older than 30 days</option>
+    <option value="h1">Last 1 hour</option>
+    <option value="custom">Custom range…</option>
+  </select>
+  <div id="cleanCustom" hidden>
+    <label for="cleanFrom">From</label><input type="datetime-local" id="cleanFrom">
+    <label for="cleanTo">To</label><input type="datetime-local" id="cleanTo">
+  </div>
+  <fieldset>
+    <legend>What to delete</legend>
+    <label><input type="radio" name="cleanWhat" value="audio" checked><span><strong>Audio only</strong><br><small>The audio of chunks in that period; the text stays.</small></span></label>
+    <label><input type="radio" name="cleanWhat" value="all"><span><strong>Whole recordings</strong><br><small>Audio and text of recordings that started in that period.</small></span></label>
+  </fieldset>
+  <p id="cleanResult" role="status" aria-live="polite"></p>
+  <div class="actions">
+    <button class="btn" type="button" id="cleanClose">Close</button>
+    <button class="btn" type="button" id="cleanPreview">Preview</button>
+    <button class="btn danger" type="button" id="cleanDelete" disabled>Delete</button>
+  </div>
+</dialog>
+
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const audio = $('audio');
+  let mode = 'sessions', hours = [], hourSel = null, hourData = null;
   let sessions = [], devices = [], deviceFilter = '', selectedId = null, detail = null, playingIndex = -1, playAll = false;
   let listTimer = null, detailTimer = null;
 
   const fmtClock = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
   const fmtDuration = (s) => s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m` : s >= 60 ? `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s` : `${Math.floor(s)}s`;
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const fmtHourRange = (a, b) => `${new Date(a * 1000).toLocaleDateString([], { dateStyle: 'medium' })}, ${new Date(a * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} – ${new Date(b * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  const fmtBytes = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.ceil(n / 1e3)} KB`;
+  const tzMinutes = () => -new Date().getTimezoneOffset();
   const fmtWhen = (t) => new Date(t * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
   async function api(path, options) {
@@ -230,7 +294,9 @@
 
   $('logoutBtn').addEventListener('click', async () => {
     await api('logout', { method: 'POST' }).catch(() => {});
-    sessions = []; devices = []; deviceFilter = ''; selectedId = null; detail = null;
+    sessions = []; devices = []; hours = []; deviceFilter = ''; selectedId = null; detail = null; hourSel = null; hourData = null;
+    mode = 'sessions'; $('modeSessions').setAttribute('aria-pressed', 'true'); $('modeHours').setAttribute('aria-pressed', 'false'); $('listTitle').textContent = 'Recordings';
+    $('toolbar').hidden = true; $('hourToolbar').hidden = true; $('player').hidden = true;
     showLogin();
   });
 
@@ -240,10 +306,11 @@
       sessions = (await (await api('sessions')).json()).sessions;
       devices = (await (await api('devices')).json()).devices;
       if (deviceFilter && !devices.some((d) => d.id === deviceFilter)) deviceFilter = '';
+      if (mode === 'hours') hours = (await (await api(`hours?device=${encodeURIComponent(deviceFilter)}&tz=${tzMinutes()}`)).json()).hours;
       renderDevices();
-      renderSessions();
+      renderList();
       const visible = visibleSessions();
-      if (selectNewest && visible.length && !selectedId) selectSession(visible[0].id);
+      if (mode === 'sessions' && selectNewest && visible.length && !selectedId) selectSession(visible[0].id);
       listTimer = setTimeout(() => refreshSessions(false), 10000);
     } catch { /* signed out, or network blip: retry */ if (!$('app').hidden) listTimer = setTimeout(() => refreshSessions(false), 10000); }
   }
@@ -262,17 +329,19 @@
 
   $('deviceSelect').addEventListener('change', (e) => {
     deviceFilter = e.target.value;
+    if (mode === 'hours') { clearSelection(); refreshSessions(false); return; }
     const stillVisible = visibleSessions().some((s) => s.id === selectedId);
     renderDevices(); renderSessions();
     if (!stillVisible) { const v = visibleSessions(); if (v.length) selectSession(v[0].id); else clearSelection(); }
   });
 
   function clearSelection() {
-    audio.pause(); playingIndex = -1; playAll = false; setPlayAllLabel();
-    selectedId = null; detail = null;
-    $('player').hidden = true; $('toolbar').hidden = true;
-    $('transcript').innerHTML = '<p class="empty">Select a recording on the left.</p>';
-    renderSessions();
+    clearTimeout(detailTimer);
+    audio.pause(); audio.removeAttribute('src'); playingIndex = -1; playAll = false; setPlayAllLabel();
+    selectedId = null; detail = null; hourSel = null; hourData = null;
+    $('player').hidden = true; $('toolbar').hidden = true; $('hourToolbar').hidden = true;
+    $('transcript').innerHTML = `<p class="empty">Select ${mode === 'hours' ? 'an hour' : 'a recording'} on the left.</p>`;
+    renderList();
   }
 
   async function deleteRequest(path, question) {
@@ -306,6 +375,196 @@
       if (r.skipped_live) window.alert(`${r.skipped_live} live recording(s) were kept.`);
       clearSelection(); await refreshSessions(true);
     }
+  });
+
+  // ── hours: every device's audio of one hour (or the last 60 minutes) as one player ──
+  const renderList = () => (mode === 'hours' ? renderHours() : renderSessions());
+
+  function setMode(next) {
+    if (next === mode) return;
+    mode = next;
+    $('modeSessions').setAttribute('aria-pressed', String(mode === 'sessions'));
+    $('modeHours').setAttribute('aria-pressed', String(mode === 'hours'));
+    $('listTitle').textContent = mode === 'hours' ? 'Hours' : 'Recordings';
+    clearSelection();
+    refreshSessions(mode === 'sessions');
+  }
+  $('modeSessions').addEventListener('click', () => setMode('sessions'));
+  $('modeHours').addEventListener('click', () => setMode('hours'));
+
+  function hourButton(title, metaText, selected, onClick) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'session';
+    if (selected) b.setAttribute('aria-current', 'true');
+    const when = document.createElement('div'); when.className = 'when'; when.textContent = title;
+    const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = metaText;
+    b.append(when, meta);
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function renderHours() {
+    const box = $('sessions');
+    box.replaceChildren();
+    box.append(hourButton('Last 60 minutes', 'Everything of the past hour, joined', hourSel && hourSel.rolling, () => selectHour({ rolling: true })));
+    if (!hours.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = 'No recordings yet.'; box.append(p); return; }
+    for (const h of hours) {
+      const meta = `${fmtDuration(h.seconds)} · ${plural(h.chunks, 'chunk')}` + (h.has_audio ? '' : ' · text only') + (deviceFilter ? '' : ` · ${h.devices.join(', ')}`);
+      box.append(hourButton(fmtHourRange(h.start, h.end), meta, hourSel && !hourSel.rolling && hourSel.start === h.start, () => selectHour({ start: h.start, end: h.end })));
+    }
+  }
+
+  async function selectHour(h) {
+    audio.pause(); playingIndex = -1;
+    const now = Date.now() / 1000;
+    hourSel = h.rolling ? { rolling: true, start: now - 3600, end: now } : h;
+    renderHours();
+    await loadHour();
+  }
+
+  const hourAudioUrl = (download) => `api/range/audio.wav?start=${hourSel.start}&end=${hourSel.end}&device=${encodeURIComponent(deviceFilter)}${download ? '&download=true' : ''}`;
+
+  async function loadHour() {
+    const sel = hourSel;
+    const res = await api(`range?start=${sel.start}&end=${sel.end}&device=${encodeURIComponent(deviceFilter)}`);
+    if (sel !== hourSel) return;
+    if (!res.ok) { $('transcript').innerHTML = '<p class="empty">Could not load this period.</p>'; return; }
+    hourData = await res.json();
+    const dev = devices.find((d) => d.id === deviceFilter);
+    $('hourToolbar').hidden = false; $('toolbar').hidden = true;
+    $('hourTitle').textContent = sel.rolling ? 'Last 60 minutes' : fmtHourRange(sel.start, sel.end);
+    $('hourMeta').textContent = `${dev ? dev.name : 'All devices'} · ${plural(hourData.chunks.length, 'chunk')} · ${fmtDuration(hourData.audio_seconds)} of audio`;
+    $('hourAudioBtn').disabled = hourData.audio_seconds <= 0;
+    $('hourDeleteBtn').disabled = hourData.audio_seconds <= 0;
+    const hasAudio = hourData.audio_seconds > 0;
+    $('player').hidden = !hasAudio;
+    if (hasAudio) { $('now').textContent = 'All the audio of this period, joined in time order. Click a line to jump to it.'; audio.src = hourAudioUrl(false); }
+    else audio.removeAttribute('src');
+    renderHourRows();
+  }
+
+  function renderHourRows() {
+    const box = $('transcript');
+    box.replaceChildren();
+    if (!hourData.chunks.length) { box.innerHTML = '<p class="empty">Nothing recorded in this period.</p>'; return; }
+    hourData.chunks.forEach((c, i) => {
+      const row = document.createElement('div');
+      row.className = 'row hr' + (c.audio_offset === null ? ' noaudio' : '');
+      row.dataset.h = i;
+      const t = document.createElement('div'); t.className = 't'; t.textContent = fmtTime(c.time);
+      const text = document.createElement('div'); text.className = 'text';
+      if (!deviceFilter) { const d = document.createElement('span'); d.className = 'dev'; d.textContent = c.device_name; text.append(d); }
+      const body = document.createElement('span');
+      if (c.text === null) { body.className = 'none'; body.textContent = 'transcribing…'; }
+      else if (c.text === '') { body.className = 'none'; body.textContent = '(silence)'; }
+      else body.textContent = c.text;
+      text.append(body);
+      if (c.audio_offset === null && c.text !== null) { const tag = document.createElement('em'); tag.className = 'tag'; tag.textContent = 'no audio'; text.append(tag); }
+      row.append(t, text);
+      if (c.audio_offset !== null) {
+        row.tabIndex = 0; row.setAttribute('role', 'button');
+        row.addEventListener('click', () => { audio.currentTime = c.audio_offset; audio.play().catch(() => {}); });
+        row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); row.click(); } });
+      }
+      box.append(row);
+    });
+  }
+
+  audio.addEventListener('timeupdate', () => {
+    if (mode !== 'hours' || !hourData) return;
+    let current = -1;
+    hourData.chunks.forEach((c, i) => { if (c.audio_offset !== null && c.audio_offset <= audio.currentTime + 0.05) current = i; });
+    document.querySelectorAll('.row.playing').forEach((r) => r.classList.remove('playing'));
+    const row = document.querySelector(`.row[data-h="${current}"]`);
+    if (row) { row.classList.add('playing'); if (!audio.paused) row.scrollIntoView({ block: 'nearest' }); }
+  });
+
+  $('hourReloadBtn').addEventListener('click', () => hourSel && selectHour(hourSel.rolling ? { rolling: true } : hourSel));
+  $('hourAudioBtn').addEventListener('click', () => {
+    if (!hourSel) return;
+    const a = document.createElement('a'); a.href = hourAudioUrl(true); a.click();
+  });
+  $('hourTextBtn').addEventListener('click', () => {
+    if (!hourData) return;
+    const lines = hourData.chunks.map((c) => `[${fmtTime(c.time)}]${deviceFilter ? '' : ' (' + c.device_name + ')'} ${c.text ?? ''}`);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/plain' }));
+    a.download = `transcript-${new Date(hourSel.start * 1000).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.txt`;
+    a.click(); URL.revokeObjectURL(a.href);
+  });
+
+  $('hourDeleteBtn').addEventListener('click', async () => {
+    if (!hourSel) return;
+    const body = { device: deviceFilter, start: hourSel.start, end: hourSel.end, what: 'audio', dry_run: true };
+    const post = (b) => api('cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+    const preview = await post(body);
+    const r = await preview.json().catch(() => ({}));
+    if (!preview.ok) { window.alert(r.detail || 'Could not check'); return; }
+    if (!r.audio_files) { window.alert('There is no audio to delete here' + (r.skipped_live ? ' (live recordings are skipped).' : '.')); return; }
+    if (!window.confirm(`Delete ${plural(r.audio_files, 'audio file')} (${fmtBytes(r.bytes)}) of this period? The text stays. This cannot be undone.`)) return;
+    const done = await post({ ...body, dry_run: false });
+    if (!done.ok) { window.alert('Could not delete'); return; }
+    const keep = hourSel.rolling ? { rolling: true } : hourSel;
+    await refreshSessions(false);
+    await selectHour(keep);
+  });
+
+  // ── clean up with filters: preview first, then delete ──
+  const cleanDlg = $('cleanDlg');
+  const cleanWhat = () => document.querySelector('input[name="cleanWhat"]:checked').value;
+  const dtEpoch = (v) => (v ? new Date(v).getTime() / 1000 : null);
+
+  function cleanBody(dryRun) {
+    const now = Date.now() / 1000, period = $('cleanPeriod').value;
+    const body = { device: $('cleanDevice').value, what: cleanWhat(), dry_run: dryRun, start: null, end: null };
+    if (period === 'o1' || period === 'o7' || period === 'o30') body.end = now - { o1: 1, o7: 7, o30: 30 }[period] * 86400;
+    else if (period === 'h1') body.start = now - 3600;
+    else if (period === 'custom') { body.start = dtEpoch($('cleanFrom').value); body.end = dtEpoch($('cleanTo').value); }
+    return body;
+  }
+
+  function cleanSay(text, bad) { $('cleanResult').textContent = text; $('cleanResult').classList.toggle('bad', !!bad); }
+  function cleanReset() { $('cleanDelete').disabled = true; cleanSay(''); $('cleanCustom').hidden = $('cleanPeriod').value !== 'custom'; }
+
+  async function cleanRequest(dryRun) {
+    const res = await api('cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cleanBody(dryRun)) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { cleanSay(data.detail || 'Could not do that', true); return null; }
+    return data;
+  }
+
+  const cleanSummary = (r) => (cleanWhat() === 'all'
+    ? `${plural(r.recordings, 'whole recording')} (${plural(r.audio_files, 'audio file')}, ${fmtBytes(r.bytes)})`
+    : `${plural(r.audio_files, 'audio file')} (${fmtBytes(r.bytes)}) from ${plural(r.recordings, 'recording')}`);
+  const liveNote = (r) => (r.skipped_live ? ` ${plural(r.skipped_live, 'live recording')} will be skipped.` : '');
+
+  $('cleanBtn').addEventListener('click', () => {
+    $('cleanDevice').replaceChildren(new Option('All devices', ''), ...devices.map((d) => new Option(d.name, d.id)));
+    $('cleanDevice').value = deviceFilter;
+    cleanReset();
+    cleanDlg.showModal();
+  });
+  $('cleanClose').addEventListener('click', () => cleanDlg.close());
+  for (const id of ['cleanDevice', 'cleanPeriod', 'cleanFrom', 'cleanTo']) $(id).addEventListener('change', cleanReset);
+  document.querySelectorAll('input[name="cleanWhat"]').forEach((r) => r.addEventListener('change', cleanReset));
+
+  $('cleanPreview').addEventListener('click', async () => {
+    cleanSay('Checking…');
+    const r = await cleanRequest(true);
+    if (!r) return;
+    if (!r.recordings && !r.audio_files) { cleanSay('Nothing matches.' + liveNote(r)); $('cleanDelete').disabled = true; return; }
+    cleanSay('Will delete ' + cleanSummary(r) + '.' + liveNote(r));
+    $('cleanDelete').disabled = false;
+  });
+
+  $('cleanDelete').addEventListener('click', async () => {
+    if (!window.confirm('Delete these now? This cannot be undone.\n\n' + $('cleanResult').textContent)) return;
+    $('cleanDelete').disabled = true;
+    const r = await cleanRequest(false);
+    if (!r) return;
+    cleanSay('Deleted ' + cleanSummary(r) + '.' + (r.skipped_live ? ` ${plural(r.skipped_live, 'live recording')} skipped.` : ''));
+    clearSelection();
+    await refreshSessions(mode === 'sessions');
   });
 
   function renderSessions() {
