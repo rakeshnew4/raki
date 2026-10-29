@@ -235,9 +235,9 @@ class DeviceAndDeleteTests(unittest.TestCase):
         s = stream_app.StreamSession("dev1", "Pixel 7")
         self.assertIn(s.session_id, webui.ACTIVE_SESSIONS)
         self.assertEqual(webui.read_session_meta(s.dir), ("dev1", "Pixel 7"))
-        self.assertEqual(stream_app.CHUNK_SECONDS, 8)
-        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 7))), 0)
-        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 1))), 1)  # a chunk is 8 s
+        self.assertEqual(stream_app.CHUNK_SECONDS, 30)
+        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 29))), 0)
+        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 1))), 1)  # a chunk is 30 s
 
     def test_devices_group_sessions_and_old_ones_are_unknown(self):
         self.session("20260101-100000-aaaaaa", "dev1", "Pixel 7")
@@ -485,9 +485,13 @@ class StreamServerSwitchTests(unittest.TestCase):
         self.assertTrue((d / "chunk_0001.wav").exists())
         self.assertFalse((d / "transcript.txt").exists())
 
-    def test_switch_off_stores_nothing(self):
+    def test_switch_off_keeps_audio_but_marks_it_temporary(self):
         d = self.run_chunk(False)
-        self.assertEqual([p.name for p in d.iterdir()], ["meta.json"])
+        self.assertTrue((d / "chunk_0001.wav").exists())
+        self.assertEqual((d / webui.TEMP_AUDIO_LIST).read_text(), "chunk_0001.wav\n")
+
+    def test_switch_on_does_not_mark_chunks_temporary(self):
+        self.assertFalse((self.run_chunk(True) / webui.TEMP_AUDIO_LIST).exists())
 
     def test_no_whisper_in_the_server(self):
         self.assertFalse(hasattr(stream_app, "whisper_model") or hasattr(stream_app, "transcribe_chunk"))
@@ -499,6 +503,60 @@ class StreamServerSwitchTests(unittest.TestCase):
         os.utime(d / "chunk_0001.wav", (time.time() - 60, time.time() - 60))
         chunks = webui._chunks(d)
         self.assertEqual([(c["n"], c["text"], c["has_audio"], c["seconds"]) for c in chunks], [(1, None, True, 3.0)])
+
+
+class AutoDeleteTests(unittest.TestCase):
+    """With "Save audio" off the audio is kept 10 minutes, then deleted; audio saved while it was on is never touched."""
+
+    def setUp(self):
+        shutil.rmtree(REC, ignore_errors=True)
+        webui._store_settings({"save_audio": True})
+
+    def age(self, path: Path, seconds: float):
+        t = time.time() - seconds
+        os.utime(path, (t, t))
+
+    def test_ten_minutes_by_default(self):
+        self.assertEqual(webui.TEMP_AUDIO_SECONDS, 600)
+
+    def test_deletes_only_old_temporary_chunks(self):
+        d = make_session("20260105-100000-aaaaaa", {1: ("w", "[chunk 0001 8.0s] kept text"), 2: ("w", None), 3: ("w", None), 4: ("w", None)})
+        (d / webui.TEMP_AUDIO_LIST).write_text("chunk_0002.wav\nchunk_0003.wav\nchunk_0004.wav\nchunk_0009.wav\n")  # 9 does not exist
+        self.age(d / "chunk_0002.wav", 601)   # old and temporary: goes
+        self.age(d / "chunk_0003.wav", 599)   # younger than 10 min: stays
+        self.age(d / "chunk_0004.wav", 3600)  # old and temporary: goes
+        self.age(d / "chunk_0001.wav", 99999)  # old but saved while the switch was on: never touched
+        self.assertEqual(webui.purge_temporary_audio(), 2)
+        self.assertEqual(sorted(p.name for p in d.glob("chunk_*.wav")), ["chunk_0001.wav", "chunk_0003.wav"])
+        self.assertEqual((d / webui.TEMP_AUDIO_LIST).read_text(), "chunk_0003.wav\n")
+
+    def test_session_left_with_nothing_is_removed_unless_live(self):
+        gone = make_session("20260105-110000-bbbbbb", {1: ("w", None)})
+        (gone / webui.TEMP_AUDIO_LIST).write_text("chunk_0001.wav\n")
+        webui.write_session_meta(gone, "dev1", "Pixel")
+        self.age(gone / "chunk_0001.wav", 700)
+        self.age(gone / "meta.json", 700)  # written when the session started, 10+ minutes ago
+        live = make_session("20260105-120000-cccccc", {1: ("w", None)})
+        (live / webui.TEMP_AUDIO_LIST).write_text("chunk_0001.wav\n")
+        self.age(live / "chunk_0001.wav", 700)
+        webui.ACTIVE_SESSIONS.add(live.name)
+        try:
+            self.assertEqual(webui.purge_temporary_audio(), 2)
+            self.assertFalse(gone.exists())
+            self.assertTrue(live.exists())  # still connected: its folder stays
+        finally:
+            webui.ACTIVE_SESSIONS.discard(live.name)
+
+    def test_session_with_a_transcript_keeps_its_folder(self):
+        d = make_session("20260105-130000-dddddd", {1: ("w", "[chunk 0001 8.0s] old text")})
+        (d / webui.TEMP_AUDIO_LIST).write_text("chunk_0001.wav\n")
+        self.age(d / "chunk_0001.wav", 700)
+        webui.purge_temporary_audio()
+        self.assertTrue((d / "transcript.txt").exists())
+
+    def test_nothing_to_do_without_a_list(self):
+        make_session("20260105-140000-eeeeee", {1: ("w", None)})
+        self.assertEqual(webui.purge_temporary_audio(), 0)
 
 
 class ManageUsersTests(unittest.TestCase):

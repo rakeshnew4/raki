@@ -34,6 +34,8 @@ CHUNK_SECONDS = 8  # same as app.py; used only for old transcripts that did not 
 BYTES_PER_SECOND = SAMPLE_RATE * SAMPLE_WIDTH
 WAV_HEADER_BYTES = 44
 LIVE_WINDOW_SECONDS = 45  # fallback when a session is not in ACTIVE_SESSIONS; longer than a chunk (nothing is written while one fills up)
+TEMP_AUDIO_SECONDS = int(os.environ.get("TEMP_AUDIO_SECONDS", "600"))  # with "Save audio" off, audio is kept this long (10 min), then deleted
+TEMP_AUDIO_LIST = "temp_audio.txt"  # per session: the chunk files written while the switch was off
 CHUNK_SETTLE_SECONDS = 1.5  # a chunk younger than this may still be being written
 
 SESSION_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
@@ -222,6 +224,45 @@ def _read_transcript(session_dir: Path) -> dict[int, tuple[float | None, str]]:
     return entries
 
 
+def mark_temporary(session_dir: Path, chunk_name: str) -> None:
+    """Remember that this chunk was recorded while "Save audio" was off: purge_temporary_audio() deletes it after 10 minutes."""
+    with open(session_dir / TEMP_AUDIO_LIST, "a", encoding="utf-8") as f:
+        f.write(chunk_name + "\n")
+
+
+def purge_temporary_audio(now: float | None = None) -> int:
+    """Delete the temporary chunks older than TEMP_AUDIO_SECONDS, and sessions that are left with nothing in them.
+
+    Chunks recorded while the switch was on are never listed, so they are never touched. Returns the number of files deleted.
+    """
+    now = time.time() if now is None else now
+    deleted = 0
+    for session_dir in _all_session_dirs():
+        listing = session_dir / TEMP_AUDIO_LIST
+        if not listing.is_file():
+            continue
+        names = [n for n in listing.read_text(encoding="utf-8").splitlines() if CHUNK_FILE_RE.match(n)]
+        keep = []
+        for name in names:
+            path = session_dir / name
+            try:
+                if now - path.stat().st_mtime > TEMP_AUDIO_SECONDS:
+                    path.unlink()
+                    deleted += 1
+                else:
+                    keep.append(name)
+            except FileNotFoundError:
+                pass  # already removed (deleted from the UI)
+        if keep:
+            listing.write_text("\n".join(keep) + "\n", encoding="utf-8")
+            continue
+        listing.unlink(missing_ok=True)
+        has_content = any(CHUNK_FILE_RE.match(p.name) or (p.name == "transcript.txt" and p.stat().st_size) for p in session_dir.iterdir())
+        if not has_content and not _is_live(session_dir):
+            shutil.rmtree(session_dir, ignore_errors=True)  # only meta.json was left
+    return deleted
+
+
 def _session_dir(session_id: str) -> Path:
     if not SESSION_ID_RE.match(session_id):
         raise HTTPException(status_code=404, detail="No such session")
@@ -233,7 +274,13 @@ def _session_dir(session_id: str) -> Path:
 
 def _settled_chunks(session_dir: Path) -> list[Path]:
     now = time.time()
-    chunks = [p for p in session_dir.iterdir() if CHUNK_FILE_RE.match(p.name) and now - p.stat().st_mtime > CHUNK_SETTLE_SECONDS]
+    chunks = []
+    for p in session_dir.iterdir():
+        try:
+            if CHUNK_FILE_RE.match(p.name) and now - p.stat().st_mtime > CHUNK_SETTLE_SECONDS:
+                chunks.append(p)
+        except FileNotFoundError:
+            pass  # deleted while we were listing (auto-delete or the UI)
     return sorted(chunks)
 
 

@@ -18,7 +18,7 @@ log = logging.getLogger("audio-stream-server")
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2  # PCM16
-CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "8"))  # audio is cut, saved in pieces of this length
+CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "30"))  # audio is cut, saved in pieces of this length
 CHUNK_BYTES = SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS * CHUNK_SECONDS
 
 RECORDINGS_DIR = Path(__file__).parent / "recordings"
@@ -28,6 +28,25 @@ app.include_router(webui.router)  # browser UI under /samsungpro
 
 # Only writes WAV files: no speech-to-text runs on this server.
 write_executor = ThreadPoolExecutor(max_workers=1)
+
+
+async def purge_loop():
+    while True:
+        await asyncio.sleep(60)
+        try:
+            removed = await asyncio.get_running_loop().run_in_executor(None, webui.purge_temporary_audio)
+            if removed:
+                log.info("Auto-delete: removed %d audio chunk(s) older than %d s (saved while 'Save audio' was off)", removed, webui.TEMP_AUDIO_SECONDS)
+        except Exception:
+            log.exception("Auto-delete failed")
+
+
+_background: list[asyncio.Task] = []  # keeps the task alive
+
+
+@app.on_event("startup")
+async def start_purge_loop():
+    _background.append(asyncio.create_task(purge_loop()))
 
 
 @app.get("/")
@@ -71,11 +90,12 @@ class StreamSession:
         return None
 
     async def flush_chunk(self, pcm_bytes: bytes) -> None:
-        # "Save audio" switch in the web UI: when it is off nothing is stored (there is no transcript to keep).
-        if not webui.save_audio_enabled():
-            return
         self.chunk_index += 1
         chunk_path = self.dir / f"chunk_{self.chunk_index:04d}.wav"
+        # "Save audio" switch in the web UI: when it is off the audio is still written, but only for 10 minutes
+        # (purge_loop deletes the chunks listed here once they are older than that).
+        if not webui.save_audio_enabled():
+            webui.mark_temporary(self.dir, chunk_path.name)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(write_executor, write_wav_chunk, chunk_path, pcm_bytes)
         log.info("[%s] chunk %d saved (%.1fs)", self.session_id, self.chunk_index, len(pcm_bytes) / (SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS))

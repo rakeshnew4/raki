@@ -259,7 +259,7 @@
     note.classList.toggle('off', !on);
     note.textContent = on
       ? 'Audio saving is ON: new recordings keep their audio so you can play it back.'
-      : 'Audio saving is OFF: new audio is received but not stored.';
+      : 'Audio saving is OFF: new audio is kept for 10 minutes, then deleted automatically.';
   }
 
   async function loadSettings() {
