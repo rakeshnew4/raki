@@ -20,7 +20,7 @@ log = logging.getLogger("audio-stream-server")
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2  # PCM16
-CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "20"))  # audio is cut, saved and transcribed in pieces of this length
+CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "8"))  # audio is cut, saved and transcribed in pieces of this length
 CHUNK_BYTES = SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS * CHUNK_SECONDS
 
 RECORDINGS_DIR = Path(__file__).parent / "recordings"

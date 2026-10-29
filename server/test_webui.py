@@ -235,9 +235,9 @@ class DeviceAndDeleteTests(unittest.TestCase):
         s = stream_app.StreamSession("dev1", "Pixel 7")
         self.assertIn(s.session_id, webui.ACTIVE_SESSIONS)
         self.assertEqual(webui.read_session_meta(s.dir), ("dev1", "Pixel 7"))
-        self.assertEqual(stream_app.CHUNK_SECONDS, 20)
-        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 19))), 0)
-        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 1))), 1)  # a chunk is 20 s
+        self.assertEqual(stream_app.CHUNK_SECONDS, 8)
+        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 7))), 0)
+        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 1))), 1)  # a chunk is 8 s
 
     def test_devices_group_sessions_and_old_ones_are_unknown(self):
         self.session("20260101-100000-aaaaaa", "dev1", "Pixel 7")
