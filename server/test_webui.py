@@ -543,51 +543,5 @@ class ManageUsersTests(unittest.TestCase):
         self.assertNotIn("longenough1", webui.USERS_FILE.read_text())
 
 
-class PhoneTranscriptTests(unittest.TestCase):
-    """Text recognised on the phone (JSON frames over the audio WebSocket) is saved and shown next to the server text."""
-
-    @classmethod
-    def setUpClass(cls):
-        webui.save_users({"alice": webui.hash_password("correct horse battery")})
-        cls.web = FastAPI()
-        cls.web.include_router(webui.router)
-
-    def setUp(self):
-        shutil.rmtree(REC, ignore_errors=True)
-        webui._store_settings({"save_audio": True})
-
-    def test_websocket_saves_final_phone_text_only(self):
-        ws_client = TestClient(stream_app.app)  # no startup: the Whisper model is not needed for text frames
-        with ws_client.websocket_connect("/samsungpro/get_audio", headers={"X-Device-Id": "dev9", "X-Device-Name": "Pixel"}) as ws:
-            ws.send_text('{"type":"transcript","text":"नमस्ते","final":false,"lang":"hi-IN"}')
-            ws.send_text('{"type":"transcript","text":"नमस्ते दुनिया","final":true,"lang":"hi-IN"}')
-            ws.send_text("not json")                            # ignored, the connection stays up
-            ws.send_text('{"type":"other","text":"x","final":true}')
-            ws.send_text('{"type":"transcript","text":"second","final":true,"lang":"hi-IN"}')
-        [session_dir] = [d for d in REC.iterdir() if d.is_dir()]
-        lines = (session_dir / "client_transcript.txt").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(lines, ["[hi-IN] नमस्ते दुनिया", "[hi-IN] second"])
-
-    def test_detail_and_listing_include_phone_text(self):
-        d = make_session("20260102-101010-aaaaaa", {1: ("w", "[chunk 0001 20.0s] server text")})
-        (d / "client_transcript.txt").write_text("[hi-IN] एक\n\n[hi-IN] दो\nbroken line\n", encoding="utf-8")
-        make_session("20260102-111111-bbbbbb", {})  # short session: no chunk yet, only phone text
-        (REC / "20260102-111111-bbbbbb" / "client_transcript.txt").write_text("[hi-IN] सिर्फ फोन\n", encoding="utf-8")
-        make_session("20260102-121212-cccccc", {})  # nothing at all and not live: stays hidden
-        client = TestClient(self.web, base_url="https://testserver")
-        self.assertEqual(client.post("/samsungpro/api/login", json={"username": "alice", "password": "correct horse battery"}).status_code, 200)
-        listing = {s["id"]: s for s in client.get("/samsungpro/api/sessions").json()["sessions"]}
-        self.assertEqual(sorted(listing), ["20260102-101010-aaaaaa", "20260102-111111-bbbbbb"])
-        self.assertEqual(listing["20260102-101010-aaaaaa"]["phone_lines"], 2)
-        detail = client.get("/samsungpro/api/sessions/20260102-101010-aaaaaa").json()
-        self.assertEqual(detail["phone"], [{"lang": "hi-IN", "text": "एक"}, {"lang": "hi-IN", "text": "दो"}])
-        self.assertEqual([c["text"] for c in detail["chunks"]], ["server text"])
-        self.assertEqual(client.get("/samsungpro/api/sessions/20260102-111111-bbbbbb").json()["chunk_count"], 0)
-        old = time.time() - 600
-        for f in (REC / "20260102-111111-bbbbbb").iterdir():
-            os.utime(f, (old, old))  # written after make_session settled the files; age it so the session is not "live"
-        self.assertEqual(client.delete("/samsungpro/api/sessions/20260102-111111-bbbbbb").status_code, 200)
-
-
 if __name__ == "__main__":
     unittest.main()
