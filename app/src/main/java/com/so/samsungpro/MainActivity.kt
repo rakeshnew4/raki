@@ -63,6 +63,11 @@ class MainActivity : AppCompatActivity() {
             }
             startService(intent)
         }
+
+        val autoStartUrl = serverUrlInput.text.toString().trim()
+        if (autoStartUrl.isNotEmpty()) {
+            requestPermissionsAndStart(autoStartUrl)
+        }
     }
 
     override fun onStart() {

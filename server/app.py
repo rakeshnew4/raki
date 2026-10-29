@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import time
@@ -68,7 +69,15 @@ class StreamSession:
         self.buffer = bytearray()
         self.chunk_index = 0
         self.transcript_path = self.dir / "transcript.txt"
+        self.client_transcript_path = self.dir / "client_transcript.txt"
         log.info("New session %s -> %s", self.session_id, self.dir)
+
+    def add_client_transcript(self, text: str, final: bool, lang: str) -> None:
+        tag = "final" if final else "partial"
+        log.info("[%s] client (%s/%s): %s", self.session_id, lang, tag, text)
+        if final:
+            with open(self.client_transcript_path, "a", encoding="utf-8") as f:
+                f.write(f"[{lang}] {text}\n")
 
     def add_audio(self, data: bytes) -> list[bytes]:
         """Append incoming audio; return any complete chunk(s) ready to flush."""
@@ -105,9 +114,25 @@ async def ws_audio(websocket: WebSocket):
     session = StreamSession()
     try:
         while True:
-            data = await websocket.receive_bytes()
-            for chunk in session.add_audio(data):
-                await session.flush_chunk(chunk)
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect(message.get("code", 1000))
+
+            if (data := message.get("bytes")) is not None:
+                for chunk in session.add_audio(data):
+                    await session.flush_chunk(chunk)
+            elif (text := message.get("text")) is not None:
+                try:
+                    payload = json.loads(text)
+                except ValueError:
+                    log.warning("[%s] ignoring non-JSON text frame: %r", session.session_id, text)
+                    continue
+                if payload.get("type") == "transcript":
+                    session.add_client_transcript(
+                        text=payload.get("text", ""),
+                        final=bool(payload.get("final", False)),
+                        lang=payload.get("lang", "unknown"),
+                    )
     except WebSocketDisconnect:
         log.info("[%s] client disconnected", session.session_id)
     finally:

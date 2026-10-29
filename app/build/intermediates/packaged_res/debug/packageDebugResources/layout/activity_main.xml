@@ -10,10 +10,12 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="Server WebSocket URL"
+        android:visibility="gone"
         android:textSize="14sp" />
 
     <EditText
         android:id="@+id/serverUrlInput"
+        android:visibility="gone"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
@@ -25,6 +27,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="24dp"
+        android:visibility="gone"
         android:orientation="horizontal">
 
         <Button
@@ -51,6 +54,7 @@
         android:layout_marginTop="24dp"
         android:text="Idle"
         android:textSize="16sp"
+        android:visibility="gone"
         android:textStyle="bold" />
 
 </LinearLayout>
