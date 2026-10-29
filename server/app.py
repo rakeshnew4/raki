@@ -20,7 +20,7 @@ log = logging.getLogger("audio-stream-server")
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2  # PCM16
-CHUNK_SECONDS = 8
+CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "20"))  # audio is cut, saved and transcribed in pieces of this length
 CHUNK_BYTES = SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS * CHUNK_SECONDS
 
 RECORDINGS_DIR = Path(__file__).parent / "recordings"
@@ -65,13 +65,15 @@ def transcribe_chunk(path: Path) -> str:
 
 
 class StreamSession:
-    def __init__(self):
+    def __init__(self, device_id: str = webui.UNKNOWN_DEVICE_ID, device_name: str = ""):
         self.session_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
         self.dir = RECORDINGS_DIR / self.session_id
         self.dir.mkdir(parents=True, exist_ok=True)
         self.buffer = bytearray()
         self.chunk_index = 0
         self.transcript_path = self.dir / "transcript.txt"
+        webui.write_session_meta(self.dir, device_id, device_name)
+        webui.ACTIVE_SESSIONS.add(self.session_id)
         log.info("New session %s -> %s", self.session_id, self.dir)
 
     def add_audio(self, data: bytes) -> list[bytes]:
@@ -111,7 +113,8 @@ class StreamSession:
 @app.websocket("/samsungpro/get_audio")  # public path behind nginx on www.vkpremium.art
 async def ws_audio(websocket: WebSocket):
     await websocket.accept()
-    session = StreamSession()
+    device_id, device_name = webui.device_from_headers(websocket.headers)
+    session = StreamSession(device_id, device_name)
     try:
         while True:
             data = await websocket.receive_bytes()
@@ -124,4 +127,5 @@ async def ws_audio(websocket: WebSocket):
         if remainder:
             with contextlib.suppress(Exception):
                 await session.flush_chunk(remainder)
+        webui.ACTIVE_SESSIONS.discard(session.session_id)
         log.info("[%s] session closed", session.session_id)

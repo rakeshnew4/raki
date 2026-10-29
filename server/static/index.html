@@ -42,6 +42,14 @@
   .row.noaudio:hover { background: transparent; }
   .tag { display: inline-block; margin-left: 8px; padding: 0 7px; border: 1px solid var(--border); border-radius: 99px; color: var(--muted); font-size: .72rem; font-style: normal; white-space: nowrap; }
   .btn:disabled { opacity: .5; cursor: default; }
+  .btn.danger { color: var(--danger); }
+  .btn.danger:hover { border-color: var(--danger); }
+  .devicebar { padding: 4px 16px 12px; border-bottom: 1px solid var(--border); }
+  .devicebar select { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); min-height: 44px; font: inherit; color: inherit; }
+  .devicebar .devinfo { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: .85rem; }
+  .devicebar .devinfo span { flex: 1; }
+  .session .dev { color: var(--accent); font-size: .82rem; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--live); margin-right: 5px; }
 
   /* login */
   #login { min-height: 100%; display: grid; place-items: center; padding: 16px; }
@@ -119,7 +127,16 @@
   <div class="notice" id="saveNote" role="status"></div>
   <div class="layout">
     <aside>
-      <h2>Sessions</h2>
+      <h2>Devices</h2>
+      <div class="devicebar">
+        <label for="deviceSelect" class="sr" style="position:absolute;left:-9999px">Device</label>
+        <select id="deviceSelect"></select>
+        <div class="devinfo" id="devInfo" hidden>
+          <span id="devInfoText"></span>
+          <button class="btn danger" id="deleteDeviceBtn" type="button">Delete all</button>
+        </div>
+      </div>
+      <h2>Recordings</h2>
       <div id="sessions"></div>
     </aside>
     <main>
@@ -127,6 +144,8 @@
         <div class="title"><strong id="sessionTitle"></strong><span id="sessionMeta"></span></div>
         <button class="btn primary" id="playAllBtn" type="button">Play all</button>
         <button class="btn" id="downloadBtn" type="button">Download text</button>
+        <button class="btn danger" id="deleteAudioBtn" type="button">Delete audio</button>
+        <button class="btn danger" id="deleteBtn" type="button">Delete recording</button>
       </div>
       <div class="player" id="player" hidden>
         <div class="now" id="now">Pick a line to play it</div>
@@ -141,11 +160,12 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const audio = $('audio');
-  let sessions = [], selectedId = null, detail = null, playingIndex = -1, playAll = false;
+  let sessions = [], devices = [], deviceFilter = '', selectedId = null, detail = null, playingIndex = -1, playAll = false;
   let listTimer = null, detailTimer = null;
 
   const fmtClock = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
   const fmtDuration = (s) => s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m` : s >= 60 ? `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s` : `${Math.floor(s)}s`;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const fmtWhen = (t) => new Date(t * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
   async function api(path, options) {
@@ -210,7 +230,7 @@
 
   $('logoutBtn').addEventListener('click', async () => {
     await api('logout', { method: 'POST' }).catch(() => {});
-    sessions = []; selectedId = null; detail = null;
+    sessions = []; devices = []; deviceFilter = ''; selectedId = null; detail = null;
     showLogin();
   });
 
@@ -218,25 +238,91 @@
     clearTimeout(listTimer);
     try {
       sessions = (await (await api('sessions')).json()).sessions;
+      devices = (await (await api('devices')).json()).devices;
+      if (deviceFilter && !devices.some((d) => d.id === deviceFilter)) deviceFilter = '';
+      renderDevices();
       renderSessions();
-      if (selectNewest && sessions.length && !selectedId) selectSession(sessions[0].id);
+      const visible = visibleSessions();
+      if (selectNewest && visible.length && !selectedId) selectSession(visible[0].id);
       listTimer = setTimeout(() => refreshSessions(false), 10000);
     } catch { /* signed out, or network blip: retry */ if (!$('app').hidden) listTimer = setTimeout(() => refreshSessions(false), 10000); }
   }
 
+  const visibleSessions = () => deviceFilter ? sessions.filter((s) => s.device_id === deviceFilter) : sessions;
+
+  function renderDevices() {
+    const sel = $('deviceSelect');
+    sel.replaceChildren(new Option(`All devices (${devices.length})`, ''));
+    for (const d of devices) sel.append(new Option(`${d.online ? '● ' : ''}${d.name} (${d.sessions})`, d.id));
+    sel.value = deviceFilter;
+    const d = devices.find((x) => x.id === deviceFilter);
+    $('devInfo').hidden = !d;
+    if (d) $('devInfoText').textContent = `${d.online ? 'Online now' : 'Last seen ' + fmtWhen(d.last_seen)} · ${fmtDuration(d.seconds)} recorded`;
+  }
+
+  $('deviceSelect').addEventListener('change', (e) => {
+    deviceFilter = e.target.value;
+    const stillVisible = visibleSessions().some((s) => s.id === selectedId);
+    renderDevices(); renderSessions();
+    if (!stillVisible) { const v = visibleSessions(); if (v.length) selectSession(v[0].id); else clearSelection(); }
+  });
+
+  function clearSelection() {
+    audio.pause(); playingIndex = -1; playAll = false; setPlayAllLabel();
+    selectedId = null; detail = null;
+    $('player').hidden = true; $('toolbar').hidden = true;
+    $('transcript').innerHTML = '<p class="empty">Select a recording on the left.</p>';
+    renderSessions();
+  }
+
+  async function deleteRequest(path, question) {
+    if (!window.confirm(question)) return null;
+    const res = await api(path, { method: 'DELETE' });
+    if (!res.ok) { window.alert((await res.json().catch(() => ({}))).detail || 'Could not delete'); return null; }
+    return res.json();
+  }
+
+  $('deleteBtn').addEventListener('click', async () => {
+    if (!detail) return;
+    const id = detail.id;
+    if (await deleteRequest('sessions/' + id, 'Delete this recording, its audio and its text? This cannot be undone.')) {
+      clearSelection(); await refreshSessions(true);
+    }
+  });
+
+  $('deleteAudioBtn').addEventListener('click', async () => {
+    if (!detail) return;
+    if (await deleteRequest(`sessions/${detail.id}/audio`, 'Delete the audio of this recording? The text stays.')) {
+      audio.pause(); $('player').hidden = true; playingIndex = -1; playAll = false; setPlayAllLabel();
+      await loadDetail(false); await refreshSessions(false);
+    }
+  });
+
+  $('deleteDeviceBtn').addEventListener('click', async () => {
+    const d = devices.find((x) => x.id === deviceFilter);
+    if (!d) return;
+    const r = await deleteRequest(`devices/${encodeURIComponent(d.id)}/sessions`, `Delete ALL ${plural(d.sessions, 'recording')} of "${d.name}", audio and text? This cannot be undone.`);
+    if (r) {
+      if (r.skipped_live) window.alert(`${r.skipped_live} live recording(s) were kept.`);
+      clearSelection(); await refreshSessions(true);
+    }
+  });
+
   function renderSessions() {
     const box = $('sessions');
     box.replaceChildren();
-    if (!sessions.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = 'No recordings yet.'; box.append(p); return; }
-    for (const s of sessions) {
+    const shown = visibleSessions();
+    if (!shown.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = 'No recordings yet.'; box.append(p); return; }
+    for (const s of shown) {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'session';
       if (s.id === selectedId) b.setAttribute('aria-current', 'true');
       const when = document.createElement('div'); when.className = 'when'; when.textContent = fmtWhen(s.started_at);
       if (s.live) { const l = document.createElement('span'); l.className = 'badge'; l.textContent = 'LIVE'; when.append(l); }
       const meta = document.createElement('div'); meta.className = 'meta';
-      meta.textContent = `${fmtDuration(s.seconds)} · ${s.chunks} chunks` + (s.has_audio ? '' : ' · text only');
+      meta.textContent = `${fmtDuration(s.seconds)} · ${plural(s.chunks, 'chunk')}` + (s.has_audio ? '' : ' · text only');
       b.append(when, meta);
+      if (!deviceFilter) { const dev = document.createElement('div'); dev.className = 'dev'; dev.textContent = s.device_name; b.append(dev); }
       b.addEventListener('click', () => selectSession(s.id));
       box.append(b);
     }
@@ -268,7 +354,9 @@
   function renderHeader() {
     $('toolbar').hidden = false;
     $('sessionTitle').textContent = fmtWhen(detail.started_at) + (detail.live ? '  ● LIVE' : '');
-    $('sessionMeta').textContent = `${fmtDuration(detail.seconds)} · ${detail.chunk_count} chunks` + (detail.has_audio ? '' : ' · text only (audio was not saved)');
+    $('deleteBtn').disabled = detail.live;
+    $('deleteAudioBtn').disabled = detail.live || !detail.has_audio;
+    $('sessionMeta').textContent = `${detail.device_name} · ${fmtDuration(detail.seconds)} · ${detail.chunk_count} chunks` + (detail.has_audio ? '' : ' · text only (audio was not saved)');
     $('playAllBtn').disabled = !detail.has_audio;
   }
 

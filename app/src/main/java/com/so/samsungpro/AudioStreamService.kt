@@ -113,7 +113,11 @@ class AudioStreamService : Service() {
     private fun connectAndStream(url: String) {
         active.set(true)
 
-        val request = Request.Builder().url(url).build()
+        val request = Request.Builder()
+            .url(url)
+            .header("X-Device-Id", deviceId())
+            .header("X-Device-Name", deviceName())
+            .build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 reconnectAttempts = 0
@@ -134,6 +138,16 @@ class AudioStreamService : Service() {
             }
         })
     }
+
+    /** Stable per-install id (the Android ID), so the server can group recordings by phone. */
+    @android.annotation.SuppressLint("HardwareIds")
+    private fun deviceId(): String =
+        android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+            ?.filter { it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' }
+            ?.takeIf { it.isNotEmpty() } ?: "unknown"
+
+    private fun deviceName(): String =
+        "${Build.MANUFACTURER} ${Build.MODEL}".trim().filter { it.code in 32..126 }
 
     private fun scheduleReconnect(url: String) {
         stopRecordingOnly()

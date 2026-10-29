@@ -197,6 +197,122 @@ class WebUiTests(unittest.TestCase):
         self.assertTrue(webui.save_audio_enabled())
 
 
+class DeviceAndDeleteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        webui.save_users({"alice": webui.hash_password("correct horse battery")})
+        cls.app = FastAPI()
+        cls.app.include_router(webui.router)
+
+    def setUp(self):
+        shutil.rmtree(REC, ignore_errors=True)
+        webui._failures.clear()
+        webui.ACTIVE_SESSIONS.clear()
+        self.client = TestClient(self.app, base_url="https://testserver")
+        r = self.client.post("/samsungpro/api/login", json={"username": "alice", "password": "correct horse battery"})
+        self.assertEqual(r.status_code, 200)
+
+    def session(self, sid, device_id=None, name="Pixel 7"):
+        d = make_session(sid, {1: ("w", "[chunk 0001 20.0s] namaste"), 2: ("w", "[chunk 0002 20.0s] dhanyavaad")})
+        if device_id:
+            webui.write_session_meta(d, device_id, name)
+            old = time.time() - 600
+            for p in d.iterdir():
+                os.utime(p, (old, old))
+        return d
+
+    # identity
+    def test_device_from_headers(self):
+        self.assertEqual(webui.device_from_headers({"x-device-id": "abc123", "x-device-name": "Samsung SM-A52"}), ("abc123", "Samsung SM-A52"))
+        self.assertEqual(webui.device_from_headers({"x-device-id": "abc123"}), ("abc123", "Device abc123"))
+        # a bad id is ignored, the IP is hashed and never stored as is
+        dev_id, name = webui.device_from_headers({"x-device-id": "../../etc", "x-real-ip": "203.0.113.9"})
+        self.assertTrue(dev_id.startswith("ip-") and "203" not in dev_id and name == "Unknown device")
+        self.assertEqual(webui.device_from_headers({}), (webui.UNKNOWN_DEVICE_ID, "Unknown device"))
+        self.assertEqual(webui.device_from_headers({"x-device-id": "ok", "x-device-name": "A\x00B\n" + "x" * 200})[1][:3], "AB" + "x")
+
+    def test_stream_session_records_device_and_is_active_until_closed(self):
+        s = stream_app.StreamSession("dev1", "Pixel 7")
+        self.assertIn(s.session_id, webui.ACTIVE_SESSIONS)
+        self.assertEqual(webui.read_session_meta(s.dir), ("dev1", "Pixel 7"))
+        self.assertEqual(stream_app.CHUNK_SECONDS, 20)
+        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 19))), 0)
+        self.assertEqual(len(s.add_audio(b"\x00" * (16000 * 2 * 1))), 1)  # a chunk is 20 s
+
+    def test_devices_group_sessions_and_old_ones_are_unknown(self):
+        self.session("20260101-100000-aaaaaa", "dev1", "Pixel 7")
+        self.session("20260102-100000-bbbbbb", "dev1", "Pixel 7 (renamed)")
+        self.session("20260103-100000-cccccc", "dev2", "Galaxy A52")
+        self.session("20251231-100000-dddddd")  # no meta.json
+        devs = {d["id"]: d for d in self.client.get("/samsungpro/api/devices").json()["devices"]}
+        self.assertEqual(set(devs), {"dev1", "dev2", "unknown"})
+        self.assertEqual(devs["dev1"]["sessions"], 2)
+        self.assertEqual(devs["dev1"]["name"], "Pixel 7 (renamed)")  # latest name wins
+        self.assertEqual(devs["dev1"]["seconds"], 80.0)
+        self.assertEqual(devs["unknown"]["name"], webui.LEGACY_DEVICE_NAME)
+        self.assertFalse(any(d["online"] for d in devs.values()))
+        by_id = {s["id"]: s for s in self.client.get("/samsungpro/api/sessions").json()["sessions"]}
+        self.assertEqual(by_id["20260103-100000-cccccc"]["device_name"], "Galaxy A52")
+        self.assertEqual(self.client.get("/samsungpro/api/sessions/20260103-100000-cccccc").json()["device_id"], "dev2")
+
+    def test_open_connection_is_live_and_device_online_even_when_quiet(self):
+        self.session("20260101-100000-aaaaaa", "dev1")
+        webui.ACTIVE_SESSIONS.add("20260101-100000-aaaaaa")  # files are old: a chunk is still filling up
+        self.assertTrue(self.client.get("/samsungpro/api/sessions/20260101-100000-aaaaaa").json()["live"])
+        self.assertTrue(self.client.get("/samsungpro/api/devices").json()["devices"][0]["online"])
+
+    # delete
+    def test_delete_endpoints_need_login(self):
+        c = TestClient(self.app, base_url="https://testserver")
+        self.assertEqual(c.delete("/samsungpro/api/sessions/20260101-100000-aaaaaa").status_code, 401)
+        self.assertEqual(c.delete("/samsungpro/api/sessions/20260101-100000-aaaaaa/audio").status_code, 401)
+        self.assertEqual(c.delete("/samsungpro/api/devices/dev1/sessions").status_code, 401)
+
+    def test_delete_session(self):
+        d = self.session("20260101-100000-aaaaaa", "dev1")
+        other = self.session("20260102-100000-bbbbbb", "dev1")
+        r = self.client.delete("/samsungpro/api/sessions/20260101-100000-aaaaaa")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(d.exists())
+        self.assertTrue(other.exists())
+        self.assertEqual(self.client.delete("/samsungpro/api/sessions/20260101-100000-aaaaaa").status_code, 404)
+
+    def test_delete_audio_only_keeps_text(self):
+        d = self.session("20260101-100000-aaaaaa", "dev1")
+        r = self.client.delete("/samsungpro/api/sessions/20260101-100000-aaaaaa/audio")
+        self.assertEqual(r.json()["audio_files_deleted"], 2)
+        self.assertEqual(list(d.glob("*.wav")), [])
+        detail = self.client.get("/samsungpro/api/sessions/20260101-100000-aaaaaa").json()
+        self.assertEqual([c["text"] for c in detail["chunks"]], ["namaste", "dhanyavaad"])
+        self.assertFalse(detail["has_audio"])
+
+    def test_live_recording_cannot_be_deleted(self):
+        d = self.session("20260101-100000-aaaaaa", "dev1")
+        webui.ACTIVE_SESSIONS.add(d.name)
+        self.assertEqual(self.client.delete(f"/samsungpro/api/sessions/{d.name}").status_code, 409)
+        self.assertEqual(self.client.delete(f"/samsungpro/api/sessions/{d.name}/audio").status_code, 409)
+        self.assertTrue(d.exists() and list(d.glob("*.wav")))
+
+    def test_delete_device_removes_its_finished_sessions_only(self):
+        a = self.session("20260101-100000-aaaaaa", "dev1")
+        live = self.session("20260102-100000-bbbbbb", "dev1")
+        keep = self.session("20260103-100000-cccccc", "dev2")
+        webui.ACTIVE_SESSIONS.add(live.name)
+        r = self.client.delete("/samsungpro/api/devices/dev1/sessions")
+        self.assertEqual(r.json(), {"deleted": 1, "skipped_live": 1})
+        self.assertFalse(a.exists())
+        self.assertTrue(live.exists() and keep.exists())
+        self.assertEqual(self.client.delete("/samsungpro/api/devices/..%2Fx/sessions").status_code, 404)
+
+    def test_bad_session_ids_cannot_delete_outside_recordings(self):
+        victim = REC.parent / "victim"
+        victim.mkdir(exist_ok=True)
+        for sid in ("..", "%2e%2e", "victim", "20260101-100000-zzzzzz"):
+            self.assertEqual(self.client.delete(f"/samsungpro/api/sessions/{sid}").status_code, 404, sid)
+        self.assertTrue(victim.exists())
+        shutil.rmtree(victim)
+
+
 class StreamServerSwitchTests(unittest.TestCase):
     """The stream server transcribes every chunk, and keeps the WAV only while the switch is on."""
 

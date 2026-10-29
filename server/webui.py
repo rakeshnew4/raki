@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import time
 from pathlib import Path
 
@@ -30,17 +31,23 @@ SAMPLE_RATE, SAMPLE_WIDTH = 16000, 2  # PCM16 mono, same as app.py
 CHUNK_SECONDS = 8  # same as app.py; used only for old transcripts that did not record the length
 BYTES_PER_SECOND = SAMPLE_RATE * SAMPLE_WIDTH
 WAV_HEADER_BYTES = 44
-LIVE_WINDOW_SECONDS = 20
+LIVE_WINDOW_SECONDS = 45  # fallback when a session is not in ACTIVE_SESSIONS; longer than a chunk (nothing is written while one fills up)
 CHUNK_SETTLE_SECONDS = 1.5  # a chunk younger than this may still be being written
 
 SESSION_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 CHUNK_FILE_RE = re.compile(r"^chunk_(\d{4})\.wav$")
 # "[chunk 0001] text" (older sessions) or "[chunk 0001 8.0s] text"
 TRANSCRIPT_LINE_RE = re.compile(r"^\[chunk (\d{4})(?: ([\d.]+)s)?\] ?(.*)$")
+DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+UNKNOWN_DEVICE_ID = "unknown"
+LEGACY_DEVICE_NAME = "Earlier recordings (device not recorded)"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_SETTINGS = {"save_audio": True}
 
 router = APIRouter(prefix="/samsungpro")
+
+# Sessions whose WebSocket is open right now (the stream server adds and removes them).
+ACTIVE_SESSIONS: set[str] = set()
 
 
 # ── passwords and users ─────────────────────────────────────────────────────
@@ -164,6 +171,39 @@ def _store_settings(settings: dict) -> None:
     tmp.replace(SETTINGS_FILE)
 
 
+# ── devices ─────────────────────────────────────────────────────────────────
+
+def _clean_name(value: str | None) -> str:
+    return "".join(ch for ch in (value or "") if ch.isprintable()).strip()[:60]
+
+
+def device_from_headers(headers) -> tuple[str, str]:
+    """(device_id, device_name) of a connecting phone: X-Device-Id / X-Device-Name from the app.
+
+    An older app build sends neither: its devices are told apart by a short hash of the client IP (not the IP itself).
+    """
+    device_id = (headers.get("x-device-id") or "").strip()
+    name = _clean_name(headers.get("x-device-name"))
+    if DEVICE_ID_RE.match(device_id):
+        return device_id, name or f"Device {device_id[:6]}"
+    ip = headers.get("x-real-ip") or ""
+    if ip:
+        return "ip-" + hashlib.sha256(ip.encode()).hexdigest()[:8], name or "Unknown device"
+    return UNKNOWN_DEVICE_ID, name or "Unknown device"
+
+
+def write_session_meta(session_dir: Path, device_id: str, device_name: str) -> None:
+    (session_dir / "meta.json").write_text(json.dumps({"device_id": device_id, "device_name": device_name}), encoding="utf-8")
+
+
+def read_session_meta(session_dir: Path) -> tuple[str, str]:
+    try:
+        meta = json.loads((session_dir / "meta.json").read_text(encoding="utf-8"))
+        return str(meta["device_id"]), str(meta.get("device_name") or "Unknown device")
+    except (FileNotFoundError, ValueError, KeyError):
+        return UNKNOWN_DEVICE_ID, LEGACY_DEVICE_NAME
+
+
 # ── recordings ──────────────────────────────────────────────────────────────
 
 def _read_transcript(session_dir: Path) -> dict[int, tuple[float | None, str]]:
@@ -222,17 +262,36 @@ def _chunks(session_dir: Path) -> list[dict]:
     return chunks
 
 
+def _is_live(session_dir: Path) -> bool:
+    if session_dir.name in ACTIVE_SESSIONS:
+        return True
+    last_activity = max([p.stat().st_mtime for p in session_dir.iterdir()] or [session_dir.stat().st_mtime])
+    return time.time() - last_activity < LIVE_WINDOW_SECONDS
+
+
 def _summary(session_dir: Path) -> dict:
     chunks = _chunks(session_dir)
-    last_activity = max([p.stat().st_mtime for p in session_dir.iterdir()] or [session_dir.stat().st_mtime])
+    device_id, device_name = read_session_meta(session_dir)
     return {
         "id": session_dir.name,
+        "device_id": device_id,
+        "device_name": device_name,
         "started_at": _started_at(session_dir.name),
         "chunks": len(chunks),
         "seconds": round(sum(c["seconds"] for c in chunks), 1),
         "has_audio": any(c["has_audio"] for c in chunks),
-        "live": time.time() - last_activity < LIVE_WINDOW_SECONDS,
+        "live": _is_live(session_dir),
     }
+
+
+def _all_session_dirs() -> list[Path]:
+    if not RECORDINGS_DIR.is_dir():
+        return []
+    return sorted((d for d in RECORDINGS_DIR.iterdir() if d.is_dir() and SESSION_ID_RE.match(d.name)), reverse=True)
+
+
+def _all_summaries() -> list[dict]:
+    return [s for s in (_summary(d) for d in _all_session_dirs()) if s["chunks"] or s["live"]]
 
 
 # ── routes ──────────────────────────────────────────────────────────────────
@@ -295,11 +354,21 @@ def update_settings(body: SettingsBody, request: Request):
 @router.get("/api/sessions")
 def list_sessions(request: Request):
     current_user(request)
-    if not RECORDINGS_DIR.is_dir():
-        return {"sessions": []}
-    dirs = [d for d in RECORDINGS_DIR.iterdir() if d.is_dir() and SESSION_ID_RE.match(d.name)]
-    sessions = [_summary(d) for d in sorted(dirs, reverse=True)]
-    return {"sessions": [s for s in sessions if s["chunks"] or s["live"]]}
+    return {"sessions": _all_summaries()}
+
+
+@router.get("/api/devices")
+def list_devices(request: Request):
+    """One row per connected device, newest recording first; online = it has a live session."""
+    current_user(request)
+    devices: dict[str, dict] = {}
+    for s in _all_summaries():  # newest first, so the first name seen is the latest one
+        d = devices.setdefault(s["device_id"], {"id": s["device_id"], "name": s["device_name"], "sessions": 0,
+                                                "seconds": 0.0, "last_seen": s["started_at"], "online": False})
+        d["sessions"] += 1
+        d["seconds"] = round(d["seconds"] + s["seconds"], 1)
+        d["online"] = d["online"] or s["live"]
+    return {"devices": list(devices.values())}
 
 
 @router.get("/api/sessions/{session_id}")
@@ -320,3 +389,56 @@ def get_audio(session_id: str, filename: str, request: Request):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="No such chunk")
     return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "private, max-age=3600"})
+
+
+# ── deleting ────────────────────────────────────────────────────────────────
+
+def _delete_audio_files(session_dir: Path) -> int:
+    removed = 0
+    for p in session_dir.iterdir():
+        if CHUNK_FILE_RE.match(p.name):
+            p.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def _refuse_if_live(session_dir: Path) -> None:
+    if _is_live(session_dir):
+        raise HTTPException(status_code=409, detail="This recording is still live. Stop it on the phone first.")
+
+
+@router.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str, request: Request):
+    """Remove the whole recording: audio and text."""
+    current_user(request)
+    session_dir = _session_dir(session_id)
+    _refuse_if_live(session_dir)
+    shutil.rmtree(session_dir)
+    return {"deleted": session_id}
+
+
+@router.delete("/api/sessions/{session_id}/audio")
+def delete_session_audio(session_id: str, request: Request):
+    """Remove only the audio of a recording; its text stays."""
+    current_user(request)
+    session_dir = _session_dir(session_id)
+    _refuse_if_live(session_dir)
+    return {"session": session_id, "audio_files_deleted": _delete_audio_files(session_dir)}
+
+
+@router.delete("/api/devices/{device_id}/sessions")
+def delete_device_sessions(device_id: str, request: Request):
+    """Remove every finished recording of one device (a live one is left alone)."""
+    current_user(request)
+    if not DEVICE_ID_RE.match(device_id):
+        raise HTTPException(status_code=404, detail="No such device")
+    deleted, skipped = 0, 0
+    for d in _all_session_dirs():
+        if read_session_meta(d)[0] != device_id:
+            continue
+        if _is_live(d):
+            skipped += 1
+        else:
+            shutil.rmtree(d)
+            deleted += 1
+    return {"deleted": deleted, "skipped_live": skipped}
