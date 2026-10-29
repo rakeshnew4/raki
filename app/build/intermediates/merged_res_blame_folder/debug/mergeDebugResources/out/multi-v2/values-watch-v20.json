@@ -1,0 +1,20 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.so.samsungpro.app-mergeDebugResources-34:/values-watch-v20/values-watch-v20.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\rakes\\.gradle\\caches\\8.13\\transforms\\a39414294e35c3ff314e7898b577b7b2\\transformed\\appcompat-1.8.0\\res\\values-watch-v20\\values-watch-v20.xml",
+                    "from": {
+                        "startLines": "2,5,8",
+                        "startColumns": "4,4,4",
+                        "startOffsets": "55,214,385",
+                        "endLines": "4,7,10",
+                        "endColumns": "12,12,12",
+                        "endOffsets": "209,380,553"
+                    }
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,7 @@
+local.properties
+
+# Server runtime data (not build output — live mic recordings/transcripts)
+server/recordings/
+server/__pycache__/
+server/.venv/
+*.pyc
