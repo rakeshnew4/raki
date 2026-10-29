@@ -12,6 +12,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from faster_whisper import WhisperModel
 
+import webui
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("audio-stream-server")
 
@@ -28,6 +30,7 @@ WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
 WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "hi")
 
 app = FastAPI()
+app.include_router(webui.router)  # browser UI under /samsungpro
 
 # Loaded once at startup and shared by all connections.
 whisper_model: WhisperModel | None = None
@@ -95,8 +98,12 @@ class StreamSession:
         text = await loop.run_in_executor(transcribe_executor, transcribe_chunk, chunk_path)
 
         log.info("[%s] chunk %d: %s", self.session_id, self.chunk_index, text or "(silence)")
+        seconds = len(pcm_bytes) / (SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS)
         with open(self.transcript_path, "a", encoding="utf-8") as f:
-            f.write(f"[chunk {self.chunk_index:04d}] {text}\n")
+            f.write(f"[chunk {self.chunk_index:04d} {seconds:.1f}s] {text}\n")
+        # "Save audio" switch in the web UI: the audio is always transcribed, but only kept when it is on.
+        if not webui.save_audio_enabled():
+            chunk_path.unlink(missing_ok=True)
 
 
 @app.websocket("/ws/audio")
