@@ -10,8 +10,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from faster_whisper import WhisperModel
-
 import webui
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -20,30 +18,16 @@ log = logging.getLogger("audio-stream-server")
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2  # PCM16
-CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "8"))  # audio is cut, saved and transcribed in pieces of this length
+CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "8"))  # audio is cut, saved in pieces of this length
 CHUNK_BYTES = SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS * CHUNK_SECONDS
 
 RECORDINGS_DIR = Path(__file__).parent / "recordings"
-WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")
-WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
-WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
-# Spoken language of the audio (Whisper code, "hi" = Hindi, output in Devanagari). Set to "auto" to detect it per chunk.
-WHISPER_LANGUAGE = None if os.environ.get("WHISPER_LANGUAGE", "hi").lower() == "auto" else os.environ.get("WHISPER_LANGUAGE", "hi")
 
 app = FastAPI()
 app.include_router(webui.router)  # browser UI under /samsungpro
 
-# Loaded once at startup and shared by all connections.
-whisper_model: WhisperModel | None = None
-transcribe_executor = ThreadPoolExecutor(max_workers=2)
-
-
-@app.on_event("startup")
-def load_model():
-    global whisper_model
-    log.info("Loading faster-whisper model '%s' (%s/%s)...", WHISPER_MODEL_SIZE, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE)
-    whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE)
-    log.info("Model loaded.")
+# Only writes WAV files: no speech-to-text runs on this server.
+write_executor = ThreadPoolExecutor(max_workers=1)
 
 
 @app.get("/")
@@ -59,11 +43,6 @@ def write_wav_chunk(path: Path, pcm_bytes: bytes) -> None:
         wf.writeframes(pcm_bytes)
 
 
-def transcribe_chunk(path: Path) -> str:
-    segments, _info = whisper_model.transcribe(str(path), language=WHISPER_LANGUAGE)
-    return " ".join(segment.text.strip() for segment in segments).strip()
-
-
 class StreamSession:
     def __init__(self, device_id: str = webui.UNKNOWN_DEVICE_ID, device_name: str = ""):
         self.session_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
@@ -71,7 +50,6 @@ class StreamSession:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.buffer = bytearray()
         self.chunk_index = 0
-        self.transcript_path = self.dir / "transcript.txt"
         webui.write_session_meta(self.dir, device_id, device_name)
         webui.ACTIVE_SESSIONS.add(self.session_id)
         log.info("New session %s -> %s", self.session_id, self.dir)
@@ -93,20 +71,14 @@ class StreamSession:
         return None
 
     async def flush_chunk(self, pcm_bytes: bytes) -> None:
+        # "Save audio" switch in the web UI: when it is off nothing is stored (there is no transcript to keep).
+        if not webui.save_audio_enabled():
+            return
         self.chunk_index += 1
         chunk_path = self.dir / f"chunk_{self.chunk_index:04d}.wav"
-
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(transcribe_executor, write_wav_chunk, chunk_path, pcm_bytes)
-        text = await loop.run_in_executor(transcribe_executor, transcribe_chunk, chunk_path)
-
-        log.info("[%s] chunk %d: %s", self.session_id, self.chunk_index, text or "(silence)")
-        seconds = len(pcm_bytes) / (SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS)
-        with open(self.transcript_path, "a", encoding="utf-8") as f:
-            f.write(f"[chunk {self.chunk_index:04d} {seconds:.1f}s] {text}\n")
-        # "Save audio" switch in the web UI: the audio is always transcribed, but only kept when it is on.
-        if not webui.save_audio_enabled():
-            chunk_path.unlink(missing_ok=True)
+        await loop.run_in_executor(write_executor, write_wav_chunk, chunk_path, pcm_bytes)
+        log.info("[%s] chunk %d saved (%.1fs)", self.session_id, self.chunk_index, len(pcm_bytes) / (SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS))
 
 
 @app.websocket("/ws/audio")

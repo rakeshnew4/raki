@@ -131,7 +131,7 @@ class WebUiTests(unittest.TestCase):
         make_session("20260101-101010-aaaaaa", {
             1: ("w", "[chunk 0001 8.0s] hello there"),
             2: ("w", "[chunk 0002 8.0s] "),            # silence
-            3: ("w", None),                             # wav settled, not transcribed yet
+            3: ("w", None),                             # wav without a transcript line (any new recording)
         })
         make_session("20260101-111111-bbbbbb", {1: (None, "[chunk 0001 8.0s] text only"), 2: (None, "[chunk 0002 3.5s] tail")})
         make_session("20260101-121212-cccccc", {1: ("w", "[chunk 0001] old format line")})
@@ -472,61 +472,33 @@ class HoursCombineCleanupTests(unittest.TestCase):
 
 
 class StreamServerSwitchTests(unittest.TestCase):
-    """The stream server transcribes every chunk, and keeps the WAV only while the switch is on."""
+    """The stream server only stores audio (no speech-to-text) and keeps the WAV only while the switch is on."""
 
     def run_chunk(self, save: bool) -> Path:
         webui._store_settings({"save_audio": save})
-        stream_app.transcribe_chunk = lambda path: "hello world"
         session = stream_app.StreamSession()
         asyncio.run(session.flush_chunk(b"\x00\x00" * 16000 * 3))  # 3 s
         return session.dir
 
-    def test_switch_on_keeps_audio(self):
+    def test_switch_on_keeps_audio_and_writes_no_transcript(self):
         d = self.run_chunk(True)
         self.assertTrue((d / "chunk_0001.wav").exists())
-        self.assertEqual((d / "transcript.txt").read_text(), "[chunk 0001 3.0s] hello world\n")
+        self.assertFalse((d / "transcript.txt").exists())
 
-    def test_switch_off_keeps_text_only(self):
+    def test_switch_off_stores_nothing(self):
         d = self.run_chunk(False)
-        self.assertFalse((d / "chunk_0001.wav").exists())
-        self.assertEqual((d / "transcript.txt").read_text(), "[chunk 0001 3.0s] hello world\n")
+        self.assertEqual([p.name for p in d.iterdir()], ["meta.json"])
 
+    def test_no_whisper_in_the_server(self):
+        self.assertFalse(hasattr(stream_app, "whisper_model") or hasattr(stream_app, "transcribe_chunk"))
+        self.assertNotIn("faster_whisper", open(Path(stream_app.__file__)).read())
+        self.assertNotIn("whisper", (Path(stream_app.__file__).parent / "requirements.txt").read_text().lower())
 
-class LanguageTests(unittest.TestCase):
-    def transcribe_with(self, env_value):
-        """Return the language argument the stream server passes to Whisper."""
-        import importlib
-        seen = {}
-
-        class FakeModel:
-            def transcribe(self, path, language=None):
-                seen["language"] = language
-                return [], None
-
-        old = os.environ.get("WHISPER_LANGUAGE")
-        if env_value is None:
-            os.environ.pop("WHISPER_LANGUAGE", None)
-        else:
-            os.environ["WHISPER_LANGUAGE"] = env_value
-        try:
-            mod = importlib.reload(stream_app)
-            mod.whisper_model = FakeModel()
-            mod.transcribe_chunk(Path("x.wav"))
-        finally:
-            if old is None:
-                os.environ.pop("WHISPER_LANGUAGE", None)
-            else:
-                os.environ["WHISPER_LANGUAGE"] = old
-            importlib.reload(stream_app)
-            stream_app.RECORDINGS_DIR = REC
-        return seen["language"]
-
-    def test_defaults_to_hindi(self):
-        self.assertEqual(self.transcribe_with(None), "hi")
-
-    def test_can_be_overridden_or_auto(self):
-        self.assertEqual(self.transcribe_with("en"), "en")
-        self.assertIsNone(self.transcribe_with("auto"))
+    def test_new_audio_chunk_shows_in_the_ui_as_audio_only(self):
+        d = self.run_chunk(True)
+        os.utime(d / "chunk_0001.wav", (time.time() - 60, time.time() - 60))
+        chunks = webui._chunks(d)
+        self.assertEqual([(c["n"], c["text"], c["has_audio"], c["seconds"]) for c in chunks], [(1, None, True, 3.0)])
 
 
 class ManageUsersTests(unittest.TestCase):

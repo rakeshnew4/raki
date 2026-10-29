@@ -249,7 +249,7 @@ def _started_at(session_id: str) -> float:
 def _chunks(session_dir: Path) -> list[dict]:
     """Every chunk of a session, from its transcript and/or its saved WAV files, with running offsets.
 
-    text is None while a chunk is still being transcribed; has_audio is False when audio saving was off.
+    text is None for chunks without a transcript (all new ones: nothing is transcribed any more); has_audio is False when audio saving was off.
     """
     entries = _read_transcript(session_dir)
     wavs = {int(CHUNK_FILE_RE.match(p.name).group(1)): p for p in _settled_chunks(session_dir)}

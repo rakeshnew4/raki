@@ -259,7 +259,7 @@
     note.classList.toggle('off', !on);
     note.textContent = on
       ? 'Audio saving is ON: new recordings keep their audio so you can play it back.'
-      : 'Audio saving is OFF: new recordings are still transcribed, but their audio is discarded. Only the text is kept.';
+      : 'Audio saving is OFF: new audio is received but not stored.';
   }
 
   async function loadSettings() {
@@ -455,7 +455,7 @@
       const text = document.createElement('div'); text.className = 'text';
       if (!deviceFilter) { const d = document.createElement('span'); d.className = 'dev'; d.textContent = c.device_name; text.append(d); }
       const body = document.createElement('span');
-      if (c.text === null) { body.className = 'none'; body.textContent = 'transcribing…'; }
+      if (c.text === null) { body.className = 'none'; body.textContent = 'audio only'; }
       else if (c.text === '') { body.className = 'none'; body.textContent = '(silence)'; }
       else body.textContent = c.text;
       text.append(body);
@@ -632,7 +632,7 @@
       row.dataset.index = i;
       const t = document.createElement('div'); t.className = 't'; t.textContent = fmtClock(c.offset);
       const text = document.createElement('div'); text.className = 'text';
-      if (c.text === null) { text.classList.add('none'); text.textContent = 'transcribing…'; }
+      if (c.text === null) { text.classList.add('none'); text.textContent = 'audio only'; }
       else if (c.text === '') { text.classList.add('none'); text.textContent = '(silence)'; }
       else text.textContent = c.text;
       if (!c.has_audio && c.text !== null) { const tag = document.createElement('em'); tag.className = 'tag'; tag.textContent = 'no audio'; text.append(tag); }
