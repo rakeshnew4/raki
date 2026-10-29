@@ -15,13 +15,7 @@ import android.media.AudioRecord
 import android.media.AudioRecordingConfiguration
 import android.media.MediaRecorder
 import android.os.Build
-import android.os.Bundle
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import okhttp3.OkHttpClient
@@ -30,7 +24,6 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString.Companion.toByteString
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -79,11 +72,6 @@ class AudioStreamService : Service() {
     /** True while the OS has silenced our mic capture (e.g. an active phone call). */
     private val isSilenced = AtomicBoolean(false)
     private var audioRecordingCallback: AudioManager.AudioRecordingCallback? = null
-
-    // SpeechRecognizer must only be touched from the main thread.
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private var speechRecognizer: SpeechRecognizer? = null
-    private val recognizerActive = AtomicBoolean(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -153,7 +141,6 @@ class AudioStreamService : Service() {
                 reconnectAttempts = 0
                 broadcastStatus("Connected — streaming")
                 startRecording(webSocket)
-                startHindiRecognition(webSocket)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -182,7 +169,6 @@ class AudioStreamService : Service() {
 
     private fun scheduleReconnect(url: String) {
         stopRecordingOnly()
-        stopHindiRecognition()
         if (!active.get()) return
         reconnectAttempts++
         val delayMs = minOf(30_000L, 1000L * reconnectAttempts)
@@ -286,101 +272,9 @@ class AudioStreamService : Service() {
     private fun stopStreaming() {
         active.set(false)
         stopRecordingOnly()
-        stopHindiRecognition()
         webSocket?.close(1000, "Client stopped streaming")
         webSocket = null
         broadcastStatus("Stopped")
-    }
-
-    /**
-     * Runs Android's on-device/native SpeechRecognizer in Hindi alongside the raw
-     * audio stream, forwarding recognized text to the server as JSON text frames.
-     * Note: this competes with [startRecording]'s AudioRecord for the microphone;
-     * on some devices one of the two captures may be silenced by the OS.
-     */
-    private fun startHindiRecognition(socket: WebSocket) {
-        mainHandler.post {
-            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-                broadcastStatus("Hindi speech recognition unavailable on this device")
-                return@post
-            }
-            val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
-            speechRecognizer = recognizer
-            recognizer.setRecognitionListener(object : RecognitionListener {
-                override fun onResults(results: Bundle) {
-                    results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { sendTranscript(socket, it, final = true) }
-                    restartListening(recognizer, delayMs = 0)
-                }
-
-                override fun onPartialResults(partialResults: Bundle) {
-                    partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { sendTranscript(socket, it, final = false) }
-                }
-
-                override fun onError(error: Int) {
-                    // ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT are routine during continuous
-                    // dictation (silence between utterances); back off briefly either way
-                    // so a persistent failure (e.g. mic held by AudioRecord) doesn't spin.
-                    restartListening(recognizer, delayMs = 400)
-                }
-
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-            recognizerActive.set(true)
-            startListening(recognizer)
-        }
-    }
-
-    private fun startListening(recognizer: SpeechRecognizer) {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
-        }
-        recognizer.startListening(intent)
-    }
-
-    private fun restartListening(recognizer: SpeechRecognizer, delayMs: Long) {
-        if (!recognizerActive.get() || !active.get()) return
-        mainHandler.postDelayed({
-            if (recognizerActive.get() && active.get()) {
-                startListening(recognizer)
-            }
-        }, delayMs)
-    }
-
-    private fun sendTranscript(socket: WebSocket, text: String, final: Boolean) {
-        val json = JSONObject().apply {
-            put("type", "transcript")
-            put("lang", "hi-IN")
-            put("final", final)
-            put("text", text)
-        }
-        socket.send(json.toString())
-    }
-
-    private fun stopHindiRecognition() {
-        recognizerActive.set(false)
-        mainHandler.post {
-            speechRecognizer?.apply {
-                stopListening()
-                cancel()
-                destroy()
-            }
-            speechRecognizer = null
-        }
     }
 
     private fun broadcastStatus(text: String) {
