@@ -1,0 +1,7 @@
+com.so.samsungpro.test.app-core-1.7.0-0 C:\Users\rakes\.gradle\caches\8.13\transforms\044029300936b3e78095c2ef69fe18df\transformed\core-1.7.0\res
+com.so.samsungpro.test.app-tracing-1.2.0-1 C:\Users\rakes\.gradle\caches\8.13\transforms\9a8f9a77af17d3417d5896bf3f2f779d\transformed\tracing-1.2.0\res
+com.so.samsungpro.test.app-androidTest-2 C:\Users\rakes\OneDrive\Desktop\sports_arena\SamsungPro\app\build\generated\res\resValues\androidTest\debug
+com.so.samsungpro.test.app-updated_navigation_xml-3 C:\Users\rakes\OneDrive\Desktop\sports_arena\SamsungPro\app\build\generated\updated_navigation_xml\debugAndroidTest
+com.so.samsungpro.test.app-mergeDebugAndroidTestResources-4 C:\Users\rakes\OneDrive\Desktop\sports_arena\SamsungPro\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\merged.dir
+com.so.samsungpro.test.app-mergeDebugAndroidTestResources-5 C:\Users\rakes\OneDrive\Desktop\sports_arena\SamsungPro\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\stripped.dir
+com.so.samsungpro.test.app-debugAndroidTest-6 C:\Users\rakes\OneDrive\Desktop\sports_arena\SamsungPro\app\build\intermediates\merged_res\debugAndroidTest\mergeDebugAndroidTestResources

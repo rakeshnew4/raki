@@ -25,6 +25,7 @@ RECORDINGS_DIR = Path(__file__).parent / "recordings"
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "hi")
 
 app = FastAPI()
 
@@ -55,7 +56,7 @@ def write_wav_chunk(path: Path, pcm_bytes: bytes) -> None:
 
 
 def transcribe_chunk(path: Path) -> str:
-    segments, _info = whisper_model.transcribe(str(path), language=None)
+    segments, _info = whisper_model.transcribe(str(path), language=WHISPER_LANGUAGE)
     return " ".join(segment.text.strip() for segment in segments).strip()
 
 
@@ -98,7 +99,7 @@ class StreamSession:
             f.write(f"[chunk {self.chunk_index:04d}] {text}\n")
 
 
-@app.websocket("/ws/audio")
+@app.websocket("/samsungpro/get_audio")
 async def ws_audio(websocket: WebSocket):
     await websocket.accept()
     session = StreamSession()
