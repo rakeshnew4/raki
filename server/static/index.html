@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raki Recordings</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --text: #1b1f27; --muted: #5b6472; --border: #d9dde4;
+    --accent: #2457d6; --accent-text: #ffffff; --accent-soft: #e6edfc; --danger: #b3261e; --live: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --surface: #1b2029; --text: #e8ebf0; --muted: #9aa4b4; --border: #2c3442;
+      --accent: #6b95f5; --accent-text: #0d1320; --accent-soft: #232d45; --danger: #f2877f; --live: #ff6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  [hidden] { display: none !important; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .btn { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 8px 14px; min-height: 40px; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+
+  /* save-audio switch */
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: .92rem; font-weight: 600; user-select: none; }
+  .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .switch .track { position: relative; width: 42px; height: 24px; border-radius: 99px; background: var(--border); transition: background .15s; flex: none; }
+  .switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track::after { transform: translateX(18px); }
+  .switch input:focus-visible + .track { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .switch input:disabled + .track { opacity: .55; }
+  .notice { padding: 6px 16px; font-size: .85rem; color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--border); }
+  .notice.off { color: var(--danger); }
+  .row.noaudio { cursor: default; }
+  .row.noaudio:hover { background: transparent; }
+  .tag { display: inline-block; margin-left: 8px; padding: 0 7px; border: 1px solid var(--border); border-radius: 99px; color: var(--muted); font-size: .72rem; font-style: normal; white-space: nowrap; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.danger { color: var(--danger); }
+  .btn.danger:hover { border-color: var(--danger); }
+  .devicebar { padding: 4px 16px 12px; border-bottom: 1px solid var(--border); }
+  .devicebar select { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); min-height: 44px; font: inherit; color: inherit; }
+  .devicebar .devinfo { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: .85rem; }
+  .devicebar .devinfo span { flex: 1; }
+  .session .dev { color: var(--accent); font-size: .82rem; }
+  .modes { display: flex; gap: 0; margin: 10px 16px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .modes button { flex: 1; border: 0; background: transparent; padding: 9px 8px; min-height: 40px; font-weight: 600; }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+  .row.hr { grid-template-columns: 74px 1fr; }
+  .row .dev { color: var(--accent); font-size: .8rem; margin-right: 8px; }
+  dialog { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 14px; width: calc(100% - 32px); max-width: 460px; padding: 22px 20px; }
+  dialog::backdrop { background: rgba(0,0,0,.5); }
+  dialog h2 { margin: 0 0 4px; font-size: 1.2rem; }
+  dialog select, dialog input[type="datetime-local"] { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); min-height: 44px; font: inherit; color: inherit; }
+  dialog fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 14px 0 0; padding: 6px 12px 10px; }
+  dialog legend { font-size: .9rem; font-weight: 600; padding: 0 6px; }
+  dialog fieldset label { display: flex; align-items: flex-start; gap: 8px; font-weight: 400; margin: 6px 0 0; }
+  dialog fieldset input { width: auto; min-height: 0; margin-top: 4px; }
+  #cleanResult { min-height: 2.6em; margin: 14px 0 0; font-size: .92rem; }
+  #cleanResult.bad { color: var(--danger); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--live); margin-right: 5px; }
+
+  /* login */
+  #login { min-height: 100%; display: grid; place-items: center; padding: 16px; }
+  .card { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 28px 24px; }
+  .card h1 { margin: 0 0 4px; font-size: 1.4rem; }
+  .card p.sub { margin: 0 0 20px; color: var(--muted); font-size: .95rem; }
+  label { display: block; font-size: .9rem; font-weight: 600; margin: 14px 0 4px; }
+  input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); min-height: 44px; }
+  #loginError { color: var(--danger); min-height: 1.4em; margin: 12px 0 0; font-size: .92rem; }
+  #loginBtn { width: 100%; margin-top: 8px; min-height: 44px; }
+
+  /* app */
+  #app { height: 100%; display: flex; flex-direction: column; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 1.1rem; flex: 1 1 140px; }
+  header .who { color: var(--muted); font-size: .9rem; }
+  .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px 1fr; }
+  aside { border-right: 1px solid var(--border); background: var(--surface); overflow-y: auto; }
+  aside h2 { margin: 0; padding: 12px 16px 8px; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .session { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border); background: transparent; padding: 12px 16px; }
+  .session:hover { background: var(--accent-soft); }
+  .session[aria-current="true"] { background: var(--accent-soft); box-shadow: inset 4px 0 0 var(--accent); }
+  .session .when { font-weight: 600; }
+  .session .meta { color: var(--muted); font-size: .85rem; }
+  .badge { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 99px; background: var(--live); color: #fff; font-size: .7rem; font-weight: 700; letter-spacing: .05em; vertical-align: middle; }
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .toolbar .title { flex: 1 1 220px; min-width: 0; }
+  .toolbar .title strong { display: block; }
+  .toolbar .title span { color: var(--muted); font-size: .88rem; }
+  .player { padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .player audio { width: 100%; height: 40px; }
+  .player .now { color: var(--muted); font-size: .85rem; margin-bottom: 4px; }
+  #transcript { flex: 1; overflow-y: auto; padding: 8px 8px 24px; }
+  .row { display: grid; grid-template-columns: 56px 1fr; gap: 4px 10px; padding: 10px 12px; margin: 2px 0; border-radius: 10px; cursor: pointer; border: 1px solid transparent; }
+  .row:hover { background: var(--accent-soft); }
+  .row.playing { background: var(--accent-soft); border-color: var(--accent); }
+  .row .t { color: var(--accent); font-variant-numeric: tabular-nums; font-size: .88rem; padding-top: 2px; }
+  .row .text { overflow-wrap: anywhere; }
+  .row .text.none { color: var(--muted); font-style: italic; }
+  .empty { color: var(--muted); padding: 32px 16px; text-align: center; }
+
+  @media (max-width: 760px) {
+    .layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    aside { max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+
+<section id="login" hidden>
+  <form class="card" id="loginForm" autocomplete="on">
+    <h1>Raki Recordings</h1>
+    <p class="sub">Sign in to read the transcripts and listen to the audio.</p>
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" autocapitalize="none" required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <p id="loginError" role="alert" aria-live="polite"></p>
+    <button class="btn primary" id="loginBtn" type="submit">Sign in</button>
+  </form>
+</section>
+
+<div id="app" hidden>
+  <header>
+    <h1>Raki Recordings</h1>
+    <label class="switch" for="saveAudio">
+      <input type="checkbox" id="saveAudio" role="switch" checked>
+      <span class="track" aria-hidden="true"></span>
+      <span>Save audio</span>
+    </label>
+    <button class="btn" id="cleanBtn" type="button">Clean up…</button>
+    <span class="who" id="who"></span>
+    <button class="btn" id="logoutBtn" type="button">Sign out</button>
+  </header>
+  <div class="notice" id="saveNote" role="status"></div>
+  <div class="layout">
+    <aside>
+      <h2>Devices</h2>
+      <div class="devicebar">
+        <label for="deviceSelect" class="sr" style="position:absolute;left:-9999px">Device</label>
+        <select id="deviceSelect"></select>
+        <div class="devinfo" id="devInfo" hidden>
+          <span id="devInfoText"></span>
+          <button class="btn danger" id="deleteDeviceBtn" type="button">Delete all</button>
+        </div>
+      </div>
+      <div class="modes" role="group" aria-label="View">
+        <button type="button" id="modeSessions" aria-pressed="true">Recordings</button>
+        <button type="button" id="modeHours" aria-pressed="false">Hours</button>
+      </div>
+      <h2 id="listTitle">Recordings</h2>
+      <div id="sessions"></div>
+    </aside>
+    <main>
+      <div class="toolbar" id="toolbar" hidden>
+        <div class="title"><strong id="sessionTitle"></strong><span id="sessionMeta"></span></div>
+        <button class="btn primary" id="playAllBtn" type="button">Play all</button>
+        <button class="btn" id="downloadBtn" type="button">Download text</button>
+        <button class="btn danger" id="deleteAudioBtn" type="button">Delete audio</button>
+        <button class="btn danger" id="deleteBtn" type="button">Delete recording</button>
+      </div>
+      <div class="toolbar" id="hourToolbar" hidden>
+        <div class="title"><strong id="hourTitle"></strong><span id="hourMeta"></span></div>
+        <button class="btn" id="hourReloadBtn" type="button">Reload</button>
+        <button class="btn" id="hourAudioBtn" type="button">Download audio</button>
+        <button class="btn" id="hourTextBtn" type="button">Download text</button>
+        <button class="btn danger" id="hourDeleteBtn" type="button">Delete this audio</button>
+      </div>
+      <div class="player" id="player" hidden>
+        <div class="now" id="now">Pick a line to play it</div>
+        <audio id="audio" controls preload="none"></audio>
+      </div>
+      <div id="transcript"><p class="empty">Select a session on the left.</p></div>
+    </main>
+  </div>
+</div>
+
+<dialog id="cleanDlg" aria-labelledby="cleanTitle">
+  <h2 id="cleanTitle">Clean up recordings</h2>
+  <p class="sub" style="margin:0 0 6px;color:var(--muted);font-size:.9rem">Pick what to remove, preview it, then delete. Live recordings are never touched.</p>
+  <label for="cleanDevice">Device</label>
+  <select id="cleanDevice"></select>
+  <label for="cleanPeriod">Period</label>
+  <select id="cleanPeriod">
+    <option value="all">Any time</option>
+    <option value="o1">Older than 1 day</option>
+    <option value="o7">Older than 7 days</option>
+    <option value="o30">Older than 30 days</option>
+    <option value="h1">Last 1 hour</option>
+    <option value="custom">Custom range…</option>
+  </select>
+  <div id="cleanCustom" hidden>
+    <label for="cleanFrom">From</label><input type="datetime-local" id="cleanFrom">
+    <label for="cleanTo">To</label><input type="datetime-local" id="cleanTo">
+  </div>
+  <fieldset>
+    <legend>What to delete</legend>
+    <label><input type="radio" name="cleanWhat" value="audio" checked><span><strong>Audio only</strong><br><small>The audio of chunks in that period; the text stays.</small></span></label>
+    <label><input type="radio" name="cleanWhat" value="all"><span><strong>Whole recordings</strong><br><small>Audio and text of recordings that started in that period.</small></span></label>
+  </fieldset>
+  <p id="cleanResult" role="status" aria-live="polite"></p>
+  <div class="actions">
+    <button class="btn" type="button" id="cleanClose">Close</button>
+    <button class="btn" type="button" id="cleanPreview">Preview</button>
+    <button class="btn danger" type="button" id="cleanDelete" disabled>Delete</button>
+  </div>
+</dialog>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const audio = $('audio');
+  let mode = 'sessions', hours = [], hourSel = null, hourData = null;
+  let sessions = [], devices = [], deviceFilter = '', selectedId = null, detail = null, playingIndex = -1, playAll = false;
+  let listTimer = null, detailTimer = null;
+
+  const fmtClock = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  const fmtDuration = (s) => s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m` : s >= 60 ? `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s` : `${Math.floor(s)}s`;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const fmtHourRange = (a, b) => `${new Date(a * 1000).toLocaleDateString([], { dateStyle: 'medium' })}, ${new Date(a * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} – ${new Date(b * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  const fmtBytes = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.ceil(n / 1e3)} KB`;
+  const tzMinutes = () => -new Date().getTimezoneOffset();
+  const fmtWhen = (t) => new Date(t * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+
+  async function api(path, options) {
+    const res = await fetch('api/' + path, { credentials: 'same-origin', ...options });
+    if (res.status === 401 && path !== 'login') { showLogin(); throw new Error('signed out'); }
+    return res;
+  }
+
+  function showLogin() {
+    clearTimeout(listTimer); clearTimeout(detailTimer);
+    audio.pause();
+    $('app').hidden = true; $('login').hidden = false;
+    $('password').value = '';
+    $('username').focus();
+  }
+
+  function showApp(username) {
+    $('login').hidden = true; $('app').hidden = false;
+    $('who').textContent = username;
+    loadSettings();
+    refreshSessions(true);
+  }
+
+  function renderSaveNote(on) {
+    $('saveAudio').checked = on;
+    const note = $('saveNote');
+    note.classList.toggle('off', !on);
+    note.textContent = on
+      ? 'Audio saving is ON: new recordings keep their audio so you can play it back.'
+      : 'Audio saving is OFF: new recordings are still transcribed, but their audio is discarded. Only the text is kept.';
+  }
+
+  async function loadSettings() {
+    try { renderSaveNote((await (await api('settings')).json()).save_audio); } catch { /* signed out */ }
+  }
+
+  $('saveAudio').addEventListener('change', async (e) => {
+    const wanted = e.target.checked;
+    e.target.disabled = true;
+    try {
+      const res = await api('settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ save_audio: wanted }) });
+      if (!res.ok) throw new Error();
+      renderSaveNote((await res.json()).save_audio);
+    } catch {
+      renderSaveNote(!wanted);
+      $('saveNote').textContent = 'Could not change the setting. Try again.';
+    } finally { e.target.disabled = false; }
+  });
+
+  $('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('loginError').textContent = '';
+    $('loginBtn').disabled = true;
+    try {
+      const res = await api('login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: $('username').value.trim(), password: $('password').value }) });
+      if (res.ok) { showApp((await res.json()).username); return; }
+      $('loginError').textContent = (await res.json().catch(() => ({}))).detail || 'Sign-in failed';
+    } catch { $('loginError').textContent = 'Could not reach the server'; }
+    finally { $('loginBtn').disabled = false; }
+  });
+
+  $('logoutBtn').addEventListener('click', async () => {
+    await api('logout', { method: 'POST' }).catch(() => {});
+    sessions = []; devices = []; hours = []; deviceFilter = ''; selectedId = null; detail = null; hourSel = null; hourData = null;
+    mode = 'sessions'; $('modeSessions').setAttribute('aria-pressed', 'true'); $('modeHours').setAttribute('aria-pressed', 'false'); $('listTitle').textContent = 'Recordings';
+    $('toolbar').hidden = true; $('hourToolbar').hidden = true; $('player').hidden = true;
+    showLogin();
+  });
+
+  async function refreshSessions(selectNewest) {
+    clearTimeout(listTimer);
+    try {
+      sessions = (await (await api('sessions')).json()).sessions;
+      devices = (await (await api('devices')).json()).devices;
+      if (deviceFilter && !devices.some((d) => d.id === deviceFilter)) deviceFilter = '';
+      if (mode === 'hours') hours = (await (await api(`hours?device=${encodeURIComponent(deviceFilter)}&tz=${tzMinutes()}`)).json()).hours;
+      renderDevices();
+      renderList();
+      const visible = visibleSessions();
+      if (mode === 'sessions' && selectNewest && visible.length && !selectedId) selectSession(visible[0].id);
+      listTimer = setTimeout(() => refreshSessions(false), 10000);
+    } catch { /* signed out, or network blip: retry */ if (!$('app').hidden) listTimer = setTimeout(() => refreshSessions(false), 10000); }
+  }
+
+  const visibleSessions = () => deviceFilter ? sessions.filter((s) => s.device_id === deviceFilter) : sessions;
+
+  function renderDevices() {
+    const sel = $('deviceSelect');
+    sel.replaceChildren(new Option(`All devices (${devices.length})`, ''));
+    for (const d of devices) sel.append(new Option(`${d.online ? '● ' : ''}${d.name} (${d.sessions})`, d.id));
+    sel.value = deviceFilter;
+    const d = devices.find((x) => x.id === deviceFilter);
+    $('devInfo').hidden = !d;
+    if (d) $('devInfoText').textContent = `${d.online ? 'Online now' : 'Last seen ' + fmtWhen(d.last_seen)} · ${fmtDuration(d.seconds)} recorded`;
+  }
+
+  $('deviceSelect').addEventListener('change', (e) => {
+    deviceFilter = e.target.value;
+    if (mode === 'hours') { clearSelection(); refreshSessions(false); return; }
+    const stillVisible = visibleSessions().some((s) => s.id === selectedId);
+    renderDevices(); renderSessions();
+    if (!stillVisible) { const v = visibleSessions(); if (v.length) selectSession(v[0].id); else clearSelection(); }
+  });
+
+  function clearSelection() {
+    clearTimeout(detailTimer);
+    audio.pause(); audio.removeAttribute('src'); playingIndex = -1; playAll = false; setPlayAllLabel();
+    selectedId = null; detail = null; hourSel = null; hourData = null;
+    $('player').hidden = true; $('toolbar').hidden = true; $('hourToolbar').hidden = true;
+    $('transcript').innerHTML = `<p class="empty">Select ${mode === 'hours' ? 'an hour' : 'a recording'} on the left.</p>`;
+    renderList();
+  }
+
+  async function deleteRequest(path, question) {
+    if (!window.confirm(question)) return null;
+    const res = await api(path, { method: 'DELETE' });
+    if (!res.ok) { window.alert((await res.json().catch(() => ({}))).detail || 'Could not delete'); return null; }
+    return res.json();
+  }
+
+  $('deleteBtn').addEventListener('click', async () => {
+    if (!detail) return;
+    const id = detail.id;
+    if (await deleteRequest('sessions/' + id, 'Delete this recording, its audio and its text? This cannot be undone.')) {
+      clearSelection(); await refreshSessions(true);
+    }
+  });
+
+  $('deleteAudioBtn').addEventListener('click', async () => {
+    if (!detail) return;
+    if (await deleteRequest(`sessions/${detail.id}/audio`, 'Delete the audio of this recording? The text stays.')) {
+      audio.pause(); $('player').hidden = true; playingIndex = -1; playAll = false; setPlayAllLabel();
+      await loadDetail(false); await refreshSessions(false);
+    }
+  });
+
+  $('deleteDeviceBtn').addEventListener('click', async () => {
+    const d = devices.find((x) => x.id === deviceFilter);
+    if (!d) return;
+    const r = await deleteRequest(`devices/${encodeURIComponent(d.id)}/sessions`, `Delete ALL ${plural(d.sessions, 'recording')} of "${d.name}", audio and text? This cannot be undone.`);
+    if (r) {
+      if (r.skipped_live) window.alert(`${r.skipped_live} live recording(s) were kept.`);
+      clearSelection(); await refreshSessions(true);
+    }
+  });
+
+  // ── hours: every device's audio of one hour (or the last 60 minutes) as one player ──
+  const renderList = () => (mode === 'hours' ? renderHours() : renderSessions());
+
+  function setMode(next) {
+    if (next === mode) return;
+    mode = next;
+    $('modeSessions').setAttribute('aria-pressed', String(mode === 'sessions'));
+    $('modeHours').setAttribute('aria-pressed', String(mode === 'hours'));
+    $('listTitle').textContent = mode === 'hours' ? 'Hours' : 'Recordings';
+    clearSelection();
+    refreshSessions(mode === 'sessions');
+  }
+  $('modeSessions').addEventListener('click', () => setMode('sessions'));
+  $('modeHours').addEventListener('click', () => setMode('hours'));
+
+  function hourButton(title, metaText, selected, onClick) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'session';
+    if (selected) b.setAttribute('aria-current', 'true');
+    const when = document.createElement('div'); when.className = 'when'; when.textContent = title;
+    const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = metaText;
+    b.append(when, meta);
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function renderHours() {
+    const box = $('sessions');
+    box.replaceChildren();
+    box.append(hourButton('Last 60 minutes', 'Everything of the past hour, joined', hourSel && hourSel.rolling, () => selectHour({ rolling: true })));
+    if (!hours.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = 'No recordings yet.'; box.append(p); return; }
+    for (const h of hours) {
+      const meta = `${fmtDuration(h.seconds)} · ${plural(h.chunks, 'chunk')}` + (h.has_audio ? '' : ' · text only') + (deviceFilter ? '' : ` · ${h.devices.join(', ')}`);
+      box.append(hourButton(fmtHourRange(h.start, h.end), meta, hourSel && !hourSel.rolling && hourSel.start === h.start, () => selectHour({ start: h.start, end: h.end })));
+    }
+  }
+
+  async function selectHour(h) {
+    audio.pause(); playingIndex = -1;
+    const now = Date.now() / 1000;
+    hourSel = h.rolling ? { rolling: true, start: now - 3600, end: now } : h;
+    renderHours();
+    await loadHour();
+  }
+
+  const hourAudioUrl = (download) => `api/range/audio.wav?start=${hourSel.start}&end=${hourSel.end}&device=${encodeURIComponent(deviceFilter)}${download ? '&download=true' : ''}`;
+
+  async function loadHour() {
+    const sel = hourSel;
+    const res = await api(`range?start=${sel.start}&end=${sel.end}&device=${encodeURIComponent(deviceFilter)}`);
+    if (sel !== hourSel) return;
+    if (!res.ok) { $('transcript').innerHTML = '<p class="empty">Could not load this period.</p>'; return; }
+    hourData = await res.json();
+    const dev = devices.find((d) => d.id === deviceFilter);
+    $('hourToolbar').hidden = false; $('toolbar').hidden = true;
+    $('hourTitle').textContent = sel.rolling ? 'Last 60 minutes' : fmtHourRange(sel.start, sel.end);
+    $('hourMeta').textContent = `${dev ? dev.name : 'All devices'} · ${plural(hourData.chunks.length, 'chunk')} · ${fmtDuration(hourData.audio_seconds)} of audio`;
+    $('hourAudioBtn').disabled = hourData.audio_seconds <= 0;
+    $('hourDeleteBtn').disabled = hourData.audio_seconds <= 0;
+    const hasAudio = hourData.audio_seconds > 0;
+    $('player').hidden = !hasAudio;
+    if (hasAudio) { $('now').textContent = 'All the audio of this period, joined in time order. Click a line to jump to it.'; audio.src = hourAudioUrl(false); }
+    else audio.removeAttribute('src');
+    renderHourRows();
+  }
+
+  function renderHourRows() {
+    const box = $('transcript');
+    box.replaceChildren();
+    if (!hourData.chunks.length) { box.innerHTML = '<p class="empty">Nothing recorded in this period.</p>'; return; }
+    hourData.chunks.forEach((c, i) => {
+      const row = document.createElement('div');
+      row.className = 'row hr' + (c.audio_offset === null ? ' noaudio' : '');
+      row.dataset.h = i;
+      const t = document.createElement('div'); t.className = 't'; t.textContent = fmtTime(c.time);
+      const text = document.createElement('div'); text.className = 'text';
+      if (!deviceFilter) { const d = document.createElement('span'); d.className = 'dev'; d.textContent = c.device_name; text.append(d); }
+      const body = document.createElement('span');
+      if (c.text === null) { body.className = 'none'; body.textContent = 'transcribing…'; }
+      else if (c.text === '') { body.className = 'none'; body.textContent = '(silence)'; }
+      else body.textContent = c.text;
+      text.append(body);
+      if (c.audio_offset === null && c.text !== null) { const tag = document.createElement('em'); tag.className = 'tag'; tag.textContent = 'no audio'; text.append(tag); }
+      row.append(t, text);
+      if (c.audio_offset !== null) {
+        row.tabIndex = 0; row.setAttribute('role', 'button');
+        row.addEventListener('click', () => { audio.currentTime = c.audio_offset; audio.play().catch(() => {}); });
+        row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); row.click(); } });
+      }
+      box.append(row);
+    });
+  }
+
+  audio.addEventListener('timeupdate', () => {
+    if (mode !== 'hours' || !hourData) return;
+    let current = -1;
+    hourData.chunks.forEach((c, i) => { if (c.audio_offset !== null && c.audio_offset <= audio.currentTime + 0.05) current = i; });
+    document.querySelectorAll('.row.playing').forEach((r) => r.classList.remove('playing'));
+    const row = document.querySelector(`.row[data-h="${current}"]`);
+    if (row) { row.classList.add('playing'); if (!audio.paused) row.scrollIntoView({ block: 'nearest' }); }
+  });
+
+  $('hourReloadBtn').addEventListener('click', () => hourSel && selectHour(hourSel.rolling ? { rolling: true } : hourSel));
+  $('hourAudioBtn').addEventListener('click', () => {
+    if (!hourSel) return;
+    const a = document.createElement('a'); a.href = hourAudioUrl(true); a.click();
+  });
+  $('hourTextBtn').addEventListener('click', () => {
+    if (!hourData) return;
+    const lines = hourData.chunks.map((c) => `[${fmtTime(c.time)}]${deviceFilter ? '' : ' (' + c.device_name + ')'} ${c.text ?? ''}`);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/plain' }));
+    a.download = `transcript-${new Date(hourSel.start * 1000).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.txt`;
+    a.click(); URL.revokeObjectURL(a.href);
+  });
+
+  $('hourDeleteBtn').addEventListener('click', async () => {
+    if (!hourSel) return;
+    const body = { device: deviceFilter, start: hourSel.start, end: hourSel.end, what: 'audio', dry_run: true };
+    const post = (b) => api('cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
+    const preview = await post(body);
+    const r = await preview.json().catch(() => ({}));
+    if (!preview.ok) { window.alert(r.detail || 'Could not check'); return; }
+    if (!r.audio_files) { window.alert('There is no audio to delete here' + (r.skipped_live ? ' (live recordings are skipped).' : '.')); return; }
+    if (!window.confirm(`Delete ${plural(r.audio_files, 'audio file')} (${fmtBytes(r.bytes)}) of this period? The text stays. This cannot be undone.`)) return;
+    const done = await post({ ...body, dry_run: false });
+    if (!done.ok) { window.alert('Could not delete'); return; }
+    const keep = hourSel.rolling ? { rolling: true } : hourSel;
+    await refreshSessions(false);
+    await selectHour(keep);
+  });
+
+  // ── clean up with filters: preview first, then delete ──
+  const cleanDlg = $('cleanDlg');
+  const cleanWhat = () => document.querySelector('input[name="cleanWhat"]:checked').value;
+  const dtEpoch = (v) => (v ? new Date(v).getTime() / 1000 : null);
+
+  function cleanBody(dryRun) {
+    const now = Date.now() / 1000, period = $('cleanPeriod').value;
+    const body = { device: $('cleanDevice').value, what: cleanWhat(), dry_run: dryRun, start: null, end: null };
+    if (period === 'o1' || period === 'o7' || period === 'o30') body.end = now - { o1: 1, o7: 7, o30: 30 }[period] * 86400;
+    else if (period === 'h1') body.start = now - 3600;
+    else if (period === 'custom') { body.start = dtEpoch($('cleanFrom').value); body.end = dtEpoch($('cleanTo').value); }
+    return body;
+  }
+
+  function cleanSay(text, bad) { $('cleanResult').textContent = text; $('cleanResult').classList.toggle('bad', !!bad); }
+  function cleanReset() { $('cleanDelete').disabled = true; cleanSay(''); $('cleanCustom').hidden = $('cleanPeriod').value !== 'custom'; }
+
+  async function cleanRequest(dryRun) {
+    const res = await api('cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cleanBody(dryRun)) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { cleanSay(data.detail || 'Could not do that', true); return null; }
+    return data;
+  }
+
+  const cleanSummary = (r) => (cleanWhat() === 'all'
+    ? `${plural(r.recordings, 'whole recording')} (${plural(r.audio_files, 'audio file')}, ${fmtBytes(r.bytes)})`
+    : `${plural(r.audio_files, 'audio file')} (${fmtBytes(r.bytes)}) from ${plural(r.recordings, 'recording')}`);
+  const liveNote = (r) => (r.skipped_live ? ` ${plural(r.skipped_live, 'live recording')} will be skipped.` : '');
+
+  $('cleanBtn').addEventListener('click', () => {
+    $('cleanDevice').replaceChildren(new Option('All devices', ''), ...devices.map((d) => new Option(d.name, d.id)));
+    $('cleanDevice').value = deviceFilter;
+    cleanReset();
+    cleanDlg.showModal();
+  });
+  $('cleanClose').addEventListener('click', () => cleanDlg.close());
+  for (const id of ['cleanDevice', 'cleanPeriod', 'cleanFrom', 'cleanTo']) $(id).addEventListener('change', cleanReset);
+  document.querySelectorAll('input[name="cleanWhat"]').forEach((r) => r.addEventListener('change', cleanReset));
+
+  $('cleanPreview').addEventListener('click', async () => {
+    cleanSay('Checking…');
+    const r = await cleanRequest(true);
+    if (!r) return;
+    if (!r.recordings && !r.audio_files) { cleanSay('Nothing matches.' + liveNote(r)); $('cleanDelete').disabled = true; return; }
+    cleanSay('Will delete ' + cleanSummary(r) + '.' + liveNote(r));
+    $('cleanDelete').disabled = false;
+  });
+
+  $('cleanDelete').addEventListener('click', async () => {
+    if (!window.confirm('Delete these now? This cannot be undone.\n\n' + $('cleanResult').textContent)) return;
+    $('cleanDelete').disabled = true;
+    const r = await cleanRequest(false);
+    if (!r) return;
+    cleanSay('Deleted ' + cleanSummary(r) + '.' + (r.skipped_live ? ` ${plural(r.skipped_live, 'live recording')} skipped.` : ''));
+    clearSelection();
+    await refreshSessions(mode === 'sessions');
+  });
+
+  function renderSessions() {
+    const box = $('sessions');
+    box.replaceChildren();
+    const shown = visibleSessions();
+    if (!shown.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = 'No recordings yet.'; box.append(p); return; }
+    for (const s of shown) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'session';
+      if (s.id === selectedId) b.setAttribute('aria-current', 'true');
+      const when = document.createElement('div'); when.className = 'when'; when.textContent = fmtWhen(s.started_at);
+      if (s.live) { const l = document.createElement('span'); l.className = 'badge'; l.textContent = 'LIVE'; when.append(l); }
+      const meta = document.createElement('div'); meta.className = 'meta';
+      meta.textContent = `${fmtDuration(s.seconds)} · ${plural(s.chunks, 'chunk')}` + (s.has_audio ? '' : ' · text only');
+      b.append(when, meta);
+      if (!deviceFilter) { const dev = document.createElement('div'); dev.className = 'dev'; dev.textContent = s.device_name; b.append(dev); }
+      b.addEventListener('click', () => selectSession(s.id));
+      box.append(b);
+    }
+  }
+
+  async function selectSession(id) {
+    if (id !== selectedId) { audio.pause(); playingIndex = -1; playAll = false; setPlayAllLabel(); $('player').hidden = true; }
+    selectedId = id; detail = null;
+    renderSessions();
+    await loadDetail(true);
+  }
+
+  async function loadDetail(scrollToEnd) {
+    clearTimeout(detailTimer);
+    const id = selectedId;
+    try {
+      const res = await api('sessions/' + id);
+      if (id !== selectedId) return;
+      if (!res.ok) { $('transcript').innerHTML = '<p class="empty">This session is no longer available.</p>'; return; }
+      const fresh = await res.json();
+      const changed = !detail || JSON.stringify(fresh.chunks) !== JSON.stringify(detail.chunks);
+      detail = fresh;
+      renderHeader();
+      if (changed) renderTranscript(scrollToEnd || fresh.live);
+      if (fresh.live) detailTimer = setTimeout(() => loadDetail(false), 5000);
+    } catch { if (selectedId === id && !$('app').hidden) detailTimer = setTimeout(() => loadDetail(false), 5000); }
+  }
+
+  function renderHeader() {
+    $('toolbar').hidden = false;
+    $('sessionTitle').textContent = fmtWhen(detail.started_at) + (detail.live ? '  ● LIVE' : '');
+    $('deleteBtn').disabled = detail.live;
+    $('deleteAudioBtn').disabled = detail.live || !detail.has_audio;
+    $('sessionMeta').textContent = `${detail.device_name} · ${fmtDuration(detail.seconds)} · ${detail.chunk_count} chunks` + (detail.has_audio ? '' : ' · text only (audio was not saved)');
+    $('playAllBtn').disabled = !detail.has_audio;
+  }
+
+  const nextWithAudio = (from) => detail.chunks.findIndex((c, i) => i >= from && c.has_audio);
+
+  function renderTranscript(scrollToEnd) {
+    const box = $('transcript');
+    const keepTop = box.scrollTop;
+    box.replaceChildren();
+    if (!detail.chunks.length) { box.innerHTML = '<p class="empty">Waiting for audio…</p>'; return; }
+    detail.chunks.forEach((c, i) => {
+      const row = document.createElement('div');
+      row.className = 'row' + (i === playingIndex ? ' playing' : '') + (c.has_audio ? '' : ' noaudio');
+      row.dataset.index = i;
+      const t = document.createElement('div'); t.className = 't'; t.textContent = fmtClock(c.offset);
+      const text = document.createElement('div'); text.className = 'text';
+      if (c.text === null) { text.classList.add('none'); text.textContent = 'transcribing…'; }
+      else if (c.text === '') { text.classList.add('none'); text.textContent = '(silence)'; }
+      else text.textContent = c.text;
+      if (!c.has_audio && c.text !== null) { const tag = document.createElement('em'); tag.className = 'tag'; tag.textContent = 'no audio'; text.append(tag); }
+      row.append(t, text);
+      if (c.has_audio) {
+        row.tabIndex = 0; row.setAttribute('role', 'button');
+        row.addEventListener('click', () => { playAll = false; setPlayAllLabel(); playChunk(i); });
+        row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); row.click(); } });
+      }
+      box.append(row);
+    });
+    box.scrollTop = scrollToEnd ? box.scrollHeight : keepTop;
+  }
+
+  function playChunk(i) {
+    if (!detail || i < 0 || i >= detail.chunks.length || !detail.chunks[i].has_audio) return;
+    playingIndex = i;
+    const c = detail.chunks[i];
+    $('player').hidden = false;
+    $('now').textContent = `Playing ${fmtClock(c.offset)} · chunk ${c.n} of ${detail.chunk_count}`;
+    audio.src = `api/sessions/${selectedId}/audio/${c.file}`;
+    audio.play().catch(() => {});
+    document.querySelectorAll('.row.playing').forEach((r) => r.classList.remove('playing'));
+    const row = document.querySelector(`.row[data-index="${i}"]`);
+    if (row) { row.classList.add('playing'); row.scrollIntoView({ block: 'nearest' }); }
+  }
+
+  function setPlayAllLabel() { $('playAllBtn').textContent = playAll ? 'Stop' : 'Play all'; }
+
+  $('playAllBtn').addEventListener('click', () => {
+    if (!detail) return;
+    if (playAll) { playAll = false; audio.pause(); setPlayAllLabel(); return; }
+    // resume from the current line, or start over when nothing is selected or the last line was the one playing
+    const first = nextWithAudio(playingIndex >= 0 && playingIndex < detail.chunks.length - 1 ? playingIndex : 0);
+    if (first < 0) return;
+    playAll = true; setPlayAllLabel();
+    playChunk(first);
+  });
+
+  audio.addEventListener('ended', () => {
+    const next = playAll && detail ? nextWithAudio(playingIndex + 1) : -1;
+    if (next >= 0) playChunk(next);
+    else { playAll = false; setPlayAllLabel(); }
+  });
+
+  $('downloadBtn').addEventListener('click', () => {
+    if (!detail) return;
+    const lines = detail.chunks.map((c) => `[${fmtClock(c.offset)}] ${c.text ?? ''}`);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/plain' }));
+    a.download = `transcript-${detail.id}.txt`;
+    a.click(); URL.revokeObjectURL(a.href);
+  });
+
+  (async () => {
+    try {
+      const res = await api('me');
+      if (res.ok) showApp((await res.json()).username); else showLogin();
+    } catch { if ($('app').hidden) showLogin(); }
+  })();
+})();
+</script>
+</body>
+</html>

@@ -13,22 +13,26 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from faster_whisper import WhisperModel
 
+import webui
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("audio-stream-server")
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2  # PCM16
-CHUNK_SECONDS = 8
+CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "20"))  # audio is cut, saved and transcribed in pieces of this length
 CHUNK_BYTES = SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS * CHUNK_SECONDS
 
 RECORDINGS_DIR = Path(__file__).parent / "recordings"
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
-WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "hi")
+# Spoken language of the audio (Whisper code, "hi" = Hindi, output in Devanagari). Set to "auto" to detect it per chunk.
+WHISPER_LANGUAGE = None if os.environ.get("WHISPER_LANGUAGE", "hi").lower() == "auto" else os.environ.get("WHISPER_LANGUAGE", "hi")
 
 app = FastAPI()
+app.include_router(webui.router)  # browser UI under /samsungpro
 
 # Loaded once at startup and shared by all connections.
 whisper_model: WhisperModel | None = None
@@ -62,7 +66,7 @@ def transcribe_chunk(path: Path) -> str:
 
 
 class StreamSession:
-    def __init__(self):
+    def __init__(self, device_id: str = webui.UNKNOWN_DEVICE_ID, device_name: str = ""):
         self.session_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
         self.dir = RECORDINGS_DIR / self.session_id
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -70,6 +74,8 @@ class StreamSession:
         self.chunk_index = 0
         self.transcript_path = self.dir / "transcript.txt"
         self.client_transcript_path = self.dir / "client_transcript.txt"
+        webui.write_session_meta(self.dir, device_id, device_name)
+        webui.ACTIVE_SESSIONS.add(self.session_id)
         log.info("New session %s -> %s", self.session_id, self.dir)
 
     def add_client_transcript(self, text: str, final: bool, lang: str) -> None:
@@ -104,14 +110,20 @@ class StreamSession:
         text = await loop.run_in_executor(transcribe_executor, transcribe_chunk, chunk_path)
 
         log.info("[%s] chunk %d: %s", self.session_id, self.chunk_index, text or "(silence)")
+        seconds = len(pcm_bytes) / (SAMPLE_RATE * SAMPLE_WIDTH_BYTES * CHANNELS)
         with open(self.transcript_path, "a", encoding="utf-8") as f:
-            f.write(f"[chunk {self.chunk_index:04d}] {text}\n")
+            f.write(f"[chunk {self.chunk_index:04d} {seconds:.1f}s] {text}\n")
+        # "Save audio" switch in the web UI: the audio is always transcribed, but only kept when it is on.
+        if not webui.save_audio_enabled():
+            chunk_path.unlink(missing_ok=True)
 
 
-@app.websocket("/samsungpro/get_audio")
+@app.websocket("/ws/audio")
+@app.websocket("/samsungpro/get_audio")  # public path behind nginx on www.vkpremium.art
 async def ws_audio(websocket: WebSocket):
     await websocket.accept()
-    session = StreamSession()
+    device_id, device_name = webui.device_from_headers(websocket.headers)
+    session = StreamSession(device_id, device_name)
     try:
         while True:
             message = await websocket.receive()
@@ -140,4 +152,5 @@ async def ws_audio(websocket: WebSocket):
         if remainder:
             with contextlib.suppress(Exception):
                 await session.flush_chunk(remainder)
+        webui.ACTIVE_SESSIONS.discard(session.session_id)
         log.info("[%s] session closed", session.session_id)
