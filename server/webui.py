@@ -222,6 +222,18 @@ def _read_transcript(session_dir: Path) -> dict[int, tuple[float | None, str]]:
     return entries
 
 
+CLIENT_LINE_RE = re.compile(r"^\[([^\]]*)\] ?(.*)$")
+
+
+def _read_client_transcript(session_dir: Path) -> list[dict]:
+    """Final phrases recognised on the phone itself (Android SpeechRecognizer), saved by app.py as "[lang] text"."""
+    try:
+        lines = (session_dir / "client_transcript.txt").read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    return [{"lang": m.group(1), "text": m.group(2).strip()} for m in map(CLIENT_LINE_RE.match, lines) if m and m.group(2).strip()]
+
+
 def _session_dir(session_id: str) -> Path:
     if not SESSION_ID_RE.match(session_id):
         raise HTTPException(status_code=404, detail="No such session")
@@ -280,6 +292,7 @@ def _summary(session_dir: Path) -> dict:
         "device_name": device_name,
         "started_at": _started_at(session_dir.name),
         "chunks": len(chunks),
+        "phone_lines": len(_read_client_transcript(session_dir)),
         "seconds": round(sum(c["seconds"] for c in chunks), 1),
         "has_audio": any(c["has_audio"] for c in chunks),
         "live": _is_live(session_dir),
@@ -293,7 +306,7 @@ def _all_session_dirs() -> list[Path]:
 
 
 def _all_summaries() -> list[dict]:
-    return [s for s in (_summary(d) for d in _all_session_dirs()) if s["chunks"] or s["live"]]
+    return [s for s in (_summary(d) for d in _all_session_dirs()) if s["chunks"] or s["phone_lines"] or s["live"]]
 
 
 # ── routes ──────────────────────────────────────────────────────────────────
@@ -378,7 +391,8 @@ def get_session(session_id: str, request: Request):
     current_user(request)
     session_dir = _session_dir(session_id)
     chunks = _chunks(session_dir)
-    return {**_summary(session_dir), "chunks": chunks, "chunk_count": len(chunks)}
+    return {**_summary(session_dir), "chunks": chunks, "chunk_count": len(chunks),
+            "phone": _read_client_transcript(session_dir)}
 
 
 @router.get("/api/sessions/{session_id}/audio/{filename}")

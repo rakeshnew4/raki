@@ -106,6 +106,9 @@
   .row .t { color: var(--accent); font-variant-numeric: tabular-nums; font-size: .88rem; padding-top: 2px; }
   .row .text { overflow-wrap: anywhere; }
   .row .text.none { color: var(--muted); font-style: italic; }
+  .row.phone { cursor: default; }
+  .row.phone:hover { background: transparent; }
+  .phonehead { margin: 18px 12px 4px; font-size: .85rem; font-weight: 600; color: var(--muted); }
   .empty { color: var(--muted); padding: 32px 16px; text-align: center; }
 
   @media (max-width: 760px) {
@@ -602,7 +605,7 @@
       if (id !== selectedId) return;
       if (!res.ok) { $('transcript').innerHTML = '<p class="empty">This session is no longer available.</p>'; return; }
       const fresh = await res.json();
-      const changed = !detail || JSON.stringify(fresh.chunks) !== JSON.stringify(detail.chunks);
+      const changed = !detail || JSON.stringify([fresh.chunks, fresh.phone]) !== JSON.stringify([detail.chunks, detail.phone]);
       detail = fresh;
       renderHeader();
       if (changed) renderTranscript(scrollToEnd || fresh.live);
@@ -625,7 +628,7 @@
     const box = $('transcript');
     const keepTop = box.scrollTop;
     box.replaceChildren();
-    if (!detail.chunks.length) { box.innerHTML = '<p class="empty">Waiting for audio…</p>'; return; }
+    if (!detail.chunks.length && !detail.phone.length) { box.innerHTML = '<p class="empty">Waiting for audio…</p>'; return; }
     detail.chunks.forEach((c, i) => {
       const row = document.createElement('div');
       row.className = 'row' + (i === playingIndex ? ' playing' : '') + (c.has_audio ? '' : ' noaudio');
@@ -644,6 +647,17 @@
       }
       box.append(row);
     });
+    if (detail.phone.length) {
+      const head = document.createElement('h3'); head.className = 'phonehead';
+      head.textContent = 'Heard on the phone (on-device recognition)';
+      box.append(head);
+      detail.phone.forEach((p) => {
+        const row = document.createElement('div'); row.className = 'row phone';
+        const t = document.createElement('div'); t.className = 't'; t.textContent = p.lang;
+        const text = document.createElement('div'); text.className = 'text'; text.textContent = p.text;
+        row.append(t, text); box.append(row);
+      });
+    }
     box.scrollTop = scrollToEnd ? box.scrollHeight : keepTop;
   }
 
@@ -681,6 +695,7 @@
   $('downloadBtn').addEventListener('click', () => {
     if (!detail) return;
     const lines = detail.chunks.map((c) => `[${fmtClock(c.offset)}] ${c.text ?? ''}`);
+    if (detail.phone.length) lines.push('', 'Heard on the phone:', ...detail.phone.map((p) => `[${p.lang}] ${p.text}`));
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/plain' }));
     a.download = `transcript-${detail.id}.txt`;
