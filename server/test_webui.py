@@ -218,6 +218,43 @@ class StreamServerSwitchTests(unittest.TestCase):
         self.assertEqual((d / "transcript.txt").read_text(), "[chunk 0001 3.0s] hello world\n")
 
 
+class LanguageTests(unittest.TestCase):
+    def transcribe_with(self, env_value):
+        """Return the language argument the stream server passes to Whisper."""
+        import importlib
+        seen = {}
+
+        class FakeModel:
+            def transcribe(self, path, language=None):
+                seen["language"] = language
+                return [], None
+
+        old = os.environ.get("WHISPER_LANGUAGE")
+        if env_value is None:
+            os.environ.pop("WHISPER_LANGUAGE", None)
+        else:
+            os.environ["WHISPER_LANGUAGE"] = env_value
+        try:
+            mod = importlib.reload(stream_app)
+            mod.whisper_model = FakeModel()
+            mod.transcribe_chunk(Path("x.wav"))
+        finally:
+            if old is None:
+                os.environ.pop("WHISPER_LANGUAGE", None)
+            else:
+                os.environ["WHISPER_LANGUAGE"] = old
+            importlib.reload(stream_app)
+            stream_app.RECORDINGS_DIR = REC
+        return seen["language"]
+
+    def test_defaults_to_hindi(self):
+        self.assertEqual(self.transcribe_with(None), "hi")
+
+    def test_can_be_overridden_or_auto(self):
+        self.assertEqual(self.transcribe_with("en"), "en")
+        self.assertIsNone(self.transcribe_with("auto"))
+
+
 class ManageUsersTests(unittest.TestCase):
     def test_password_hash_verifies(self):
         h = webui.hash_password("s3cret-pass")

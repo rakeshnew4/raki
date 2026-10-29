@@ -27,7 +27,8 @@ RECORDINGS_DIR = Path(__file__).parent / "recordings"
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
-WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "hi")
+# Spoken language of the audio (Whisper code, "hi" = Hindi, output in Devanagari). Set to "auto" to detect it per chunk.
+WHISPER_LANGUAGE = None if os.environ.get("WHISPER_LANGUAGE", "hi").lower() == "auto" else os.environ.get("WHISPER_LANGUAGE", "hi")
 
 app = FastAPI()
 app.include_router(webui.router)  # browser UI under /samsungpro
