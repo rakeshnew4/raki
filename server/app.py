@@ -99,7 +99,8 @@ class StreamSession:
             f.write(f"[chunk {self.chunk_index:04d}] {text}\n")
 
 
-@app.websocket("/samsungpro/get_audio")
+@app.websocket("/ws/audio")
+@app.websocket("/samsungpro/get_audio")  # public path behind nginx on www.vkpremium.art
 async def ws_audio(websocket: WebSocket):
     await websocket.accept()
     session = StreamSession()
